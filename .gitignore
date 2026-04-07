@@ -8,6 +8,10 @@
 # Gradle wrapper JAR (downloaded by: make setup)
 gradle/wrapper/gradle-wrapper.jar
 
+# Gradle/Kotlin build caches
+/.gradle/
+/.kotlin/
+
 # Android Studio / IntelliJ
 /.idea/
 *.iml
