@@ -1,3 +1,4 @@
 <resources>
-    <style name="Theme.Pocketd" parent="Theme.Material3.DayNight.NoActionBar" />
+    <!-- Compose apps only need a minimal XML base theme (no action bar). -->
+    <style name="Theme.Pocketd" parent="android:Theme.Material.Light.NoActionBar" />
 </resources>

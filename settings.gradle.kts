@@ -18,11 +18,7 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
     }
-    versionCatalogs {
-        create("libs") {
-            from(files("gradle/libs.versions.toml"))
-        }
-    }
+    // gradle/libs.versions.toml is auto-discovered by Gradle 8+ as the 'libs' catalog
 }
 
 rootProject.name = "pocketd"

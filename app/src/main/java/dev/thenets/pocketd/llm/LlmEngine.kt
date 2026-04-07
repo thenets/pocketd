@@ -2,6 +2,7 @@ package dev.thenets.pocketd.llm
 
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
@@ -26,9 +27,15 @@ private const val TAG = "LlmEngine"
 /**
  * Thread-safe wrapper around the LiteRT-LM [Engine] with:
  *  - Lazy model loading (first request triggers load)
- *  - GPU backend with automatic fallback to CPU
+ *  - GPU backend with automatic CPU fallback
  *  - Idle timeout (unloads engine after [idleTimeoutMs] ms of inactivity)
  *  - Coroutine-based API: [generate] (suspend) and [generateStream] (Flow)
+ *
+ * LiteRT-LM 0.10.0 API notes:
+ *  - Engine(EngineConfig) — config passed to constructor
+ *  - engine.initialize()  — no-arg; separate blocking call
+ *  - Backend.GPU() / Backend.CPU() — instantiate as data classes
+ *  - Message.contents.contents — List<Content>; text via Content.Text.text
  */
 class LlmEngine(
     private val modelPath: String,
@@ -47,8 +54,8 @@ class LlmEngine(
     // ── Public API ─────────────────────────────────────────────────────────
 
     /**
-     * Runs inference and returns the complete response as a String.
-     * Suspends on the IO dispatcher while waiting for completion.
+     * Runs inference and returns the complete response string.
+     * Suspends on the IO dispatcher until done.
      */
     suspend fun generate(prompt: String): String = withContext(Dispatchers.IO) {
         val conv = getConversation()
@@ -56,7 +63,7 @@ class LlmEngine(
             val sb = StringBuilder()
             conv.sendMessageAsync(prompt, object : MessageCallback {
                 override fun onMessage(message: Message) {
-                    sb.append(message.text ?: "")
+                    sb.append(message.textContent())
                 }
                 override fun onDone() {
                     resetIdleTimer()
@@ -72,13 +79,14 @@ class LlmEngine(
 
     /**
      * Runs inference and emits partial tokens as a [Flow].
-     * The flow completes when inference finishes or throws on error.
+     * The flow completes when inference finishes, or throws on error.
      */
     fun generateStream(prompt: String): Flow<String> = callbackFlow {
         val conv = withContext(Dispatchers.IO) { getConversation() }
         conv.sendMessageAsync(prompt, object : MessageCallback {
             override fun onMessage(message: Message) {
-                message.text?.let { trySend(it) }
+                val text = message.textContent()
+                if (text.isNotEmpty()) trySend(text)
             }
             override fun onDone() {
                 resetIdleTimer()
@@ -110,24 +118,17 @@ class LlmEngine(
 
     private fun loadEngine() {
         Log.i(TAG, "Loading model: $modelPath")
-        val gpuConfig = EngineConfig.Builder()
-            .setModelPath(modelPath)
-            .setBackend(Backend.GPU)
-            .build()
-        val newEngine = Engine()
+        // Engine(EngineConfig) — config is passed to constructor in 0.10.0
+        val gpuEngine = Engine(EngineConfig(modelPath = modelPath, backend = Backend.GPU()))
         try {
-            newEngine.initialize(gpuConfig)
-            engine = newEngine
+            gpuEngine.initialize()
+            engine = gpuEngine
             Log.i(TAG, "Engine ready (GPU)")
         } catch (e: Exception) {
             Log.w(TAG, "GPU backend failed (${e.message}), retrying with CPU")
-            runCatching { newEngine.close() }
-            val cpuConfig = EngineConfig.Builder()
-                .setModelPath(modelPath)
-                .setBackend(Backend.CPU)
-                .build()
-            val cpuEngine = Engine()
-            cpuEngine.initialize(cpuConfig)
+            runCatching { gpuEngine.close() }
+            val cpuEngine = Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU()))
+            cpuEngine.initialize()
             engine = cpuEngine
             Log.i(TAG, "Engine ready (CPU)")
         }
@@ -149,3 +150,13 @@ class LlmEngine(
         }, idleTimeoutMs, TimeUnit.MILLISECONDS)
     }
 }
+
+/**
+ * Extracts concatenated text from a [Message]'s [Content.Text] items.
+ * In LiteRT-LM 0.10.0, Message has no direct `.text` property;
+ * text lives in `message.contents.contents` as `Content.Text` instances.
+ */
+private fun Message.textContent(): String =
+    contents.contents
+        .filterIsInstance<Content.Text>()
+        .joinToString("") { it.text }

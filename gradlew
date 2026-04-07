@@ -4,7 +4,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-GRADLE_BIN="$SCRIPT_DIR/.cache/gradle-dist/gradle-8.9/bin/gradle"
+GRADLE_BIN="$SCRIPT_DIR/.cache/gradle-dist/gradle-8.11.1/bin/gradle"
 
 if [ ! -x "$GRADLE_BIN" ]; then
     echo "error: Gradle binary not found at $GRADLE_BIN" >&2

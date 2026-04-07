@@ -16,6 +16,7 @@ import dev.thenets.pocketd.model.Usage
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.engine.ApplicationEngine
 import io.ktor.server.engine.embeddedServer
@@ -61,11 +62,10 @@ class HttpServer(
         ) {
             install(ContentNegotiation) { json(json) }
 
-            install(BearerAuthPlugin) { token = bearerToken }
-
             routing {
                 // Minimal model list for OpenAI client compatibility
                 get("/v1/models") {
+                    if (!call.checkBearerAuth(bearerToken)) return@get
                     call.respond(
                         mapOf(
                             "object" to "list",
@@ -81,6 +81,7 @@ class HttpServer(
                 }
 
                 post("/v1/chat/completions") {
+                    if (!call.checkBearerAuth(bearerToken)) return@post
                     val req = try {
                         call.receive<ChatCompletionRequest>()
                     } catch (e: Exception) {
