@@ -1,0 +1,41 @@
+[versions]
+agp                       = "8.5.2"
+kotlin                    = "2.0.21"
+compileSdk                = "35"
+targetSdk                 = "35"
+minSdk                    = "26"
+coreKtx                   = "1.13.1"
+lifecycle                 = "2.8.7"
+activityCompose           = "1.9.3"
+composeBom                = "2024.11.00"
+litertlm                  = "0.10.1"
+ktor                      = "2.3.12"
+kotlinxSerializationJson  = "1.7.3"
+kotlinxCoroutines         = "1.9.0"
+
+[libraries]
+androidx-core-ktx                = { group = "androidx.core",      name = "core-ktx",              version.ref = "coreKtx" }
+androidx-lifecycle-runtime-ktx   = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
+androidx-lifecycle-service        = { group = "androidx.lifecycle", name = "lifecycle-service",      version.ref = "lifecycle" }
+androidx-activity-compose        = { group = "androidx.activity",  name = "activity-compose",       version.ref = "activityCompose" }
+compose-bom                      = { group = "androidx.compose",   name = "compose-bom",            version.ref = "composeBom" }
+compose-ui                       = { group = "androidx.compose.ui", name = "ui" }
+compose-ui-tooling-preview       = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+compose-material3                = { group = "androidx.compose.material3", name = "material3" }
+compose-ui-tooling               = { group = "androidx.compose.ui", name = "ui-tooling" }
+
+litertlm-android                 = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", version.ref = "litertlm" }
+
+ktor-server-core                 = { group = "io.ktor", name = "ktor-server-core",                  version.ref = "ktor" }
+ktor-server-netty                = { group = "io.ktor", name = "ktor-server-netty",                  version.ref = "ktor" }
+ktor-server-content-negotiation  = { group = "io.ktor", name = "ktor-server-content-negotiation",    version.ref = "ktor" }
+ktor-serialization-kotlinx-json  = { group = "io.ktor", name = "ktor-serialization-kotlinx-json",   version.ref = "ktor" }
+
+kotlinx-serialization-json       = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
+kotlinx-coroutines-android       = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android",  version.ref = "kotlinxCoroutines" }
+
+[plugins]
+android-application  = { id = "com.android.application",                  version.ref = "agp"    }
+kotlin-android       = { id = "org.jetbrains.kotlin.android",              version.ref = "kotlin" }
+kotlin-compose       = { id = "org.jetbrains.kotlin.plugin.compose",       version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

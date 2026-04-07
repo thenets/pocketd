@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">pocketd</string>
+    <string name="channel_name">LLM Server</string>
+    <string name="channel_description">Keeps the local LLM HTTP server running in the background</string>
+    <string name="notification_title">pocketd server running</string>
+    <string name="notification_text_format">Listening on 0.0.0.0:%d</string>
+</resources>
