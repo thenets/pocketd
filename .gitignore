@@ -1,0 +1,15 @@
+# Build outputs
+/app/build/
+/build/
+
+# Downloaded toolchain (repopulate with: make setup)
+/.cache/
+
+# Gradle wrapper JAR (downloaded by: make setup)
+gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio / IntelliJ
+/.idea/
+*.iml
+.DS_Store
+local.properties
