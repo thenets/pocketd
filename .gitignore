@@ -8,6 +8,9 @@
 # Gradle wrapper JAR (downloaded by: make setup)
 gradle/wrapper/gradle-wrapper.jar
 
+# Distribution output
+/dist/
+
 # Gradle/Kotlin build caches
 /.gradle/
 /.kotlin/
