@@ -10,6 +10,8 @@ import android.os.IBinder
 import android.util.Log
 import dev.thenets.pocketd.llm.LlmEngine
 import dev.thenets.pocketd.server.HttpServer
+import dev.thenets.pocketd.util.NetworkAddress
+import dev.thenets.pocketd.util.NetworkUtils
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,22 +27,26 @@ class LlmServerService : Service() {
         const val EXTRA_PORT          = "port"
         const val EXTRA_BEARER_TOKEN  = "bearer_token"
         const val EXTRA_IDLE_TIMEOUT  = "idle_timeout_ms"
+        const val EXTRA_CONTEXT_SIZE  = "context_size"
 
         const val DEFAULT_MODEL_PATH   = "/sdcard/Download/gemma-4-E2B-it.litertlm"
         const val DEFAULT_PORT         = 8080
         const val DEFAULT_IDLE_TIMEOUT = 5 * 60 * 1000L
+        const val DEFAULT_CONTEXT_SIZE = 2048
 
         fun startIntent(
             context: Context,
             modelPath: String    = DEFAULT_MODEL_PATH,
             port: Int            = DEFAULT_PORT,
             bearerToken: String? = null,
-            idleTimeoutMs: Long  = DEFAULT_IDLE_TIMEOUT
+            idleTimeoutMs: Long  = DEFAULT_IDLE_TIMEOUT,
+            contextSize: Int     = DEFAULT_CONTEXT_SIZE
         ): Intent = Intent(context, LlmServerService::class.java).apply {
             putExtra(EXTRA_MODEL_PATH,   modelPath)
             putExtra(EXTRA_PORT,         port)
             putExtra(EXTRA_BEARER_TOKEN, bearerToken)
             putExtra(EXTRA_IDLE_TIMEOUT, idleTimeoutMs)
+            putExtra(EXTRA_CONTEXT_SIZE, contextSize)
         }
 
         fun stopIntent(context: Context): Intent =
@@ -62,7 +68,12 @@ class LlmServerService : Service() {
     sealed class ServerState {
         object Stopped  : ServerState()
         object Starting : ServerState()
-        data class Running(val port: Int, val modelPath: String) : ServerState()
+        data class Running(
+            val port: Int,
+            val modelPath: String,
+            val addresses: List<NetworkAddress> = emptyList(),
+            val contextSize: Int = DEFAULT_CONTEXT_SIZE
+        ) : ServerState()
         data class Error(val message: String) : ServerState()
     }
 
@@ -83,6 +94,8 @@ class LlmServerService : Service() {
         val bearerToken = intent?.getStringExtra(EXTRA_BEARER_TOKEN)
         val idleTimeout = intent?.getLongExtra(EXTRA_IDLE_TIMEOUT, DEFAULT_IDLE_TIMEOUT)
                           ?: DEFAULT_IDLE_TIMEOUT
+        val contextSize = intent?.getIntExtra(EXTRA_CONTEXT_SIZE, DEFAULT_CONTEXT_SIZE)
+                          ?: DEFAULT_CONTEXT_SIZE
 
         // Promote to foreground BEFORE doing any work (required by Android 12+)
         promoteToForeground(port)
@@ -92,7 +105,7 @@ class LlmServerService : Service() {
         try {
             tearDown()
 
-            llmEngine  = LlmEngine(modelPath = modelPath, idleTimeoutMs = idleTimeout)
+            llmEngine  = LlmEngine(modelPath = modelPath, idleTimeoutMs = idleTimeout, contextSize = contextSize)
             httpServer = HttpServer(
                 llmEngine   = llmEngine!!,
                 port        = port,
@@ -100,7 +113,13 @@ class LlmServerService : Service() {
             )
             httpServer!!.start()
 
-            _serverState.value = ServerState.Running(port = port, modelPath = modelPath)
+            val addresses = NetworkUtils.getServerAddresses(port)
+            _serverState.value = ServerState.Running(
+                port = port,
+                modelPath = modelPath,
+                addresses = addresses,
+                contextSize = contextSize
+            )
             Log.i(TAG, "Server running — model=$modelPath port=$port")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start server", e)
