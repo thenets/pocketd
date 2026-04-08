@@ -39,11 +39,14 @@ private const val TAG = "LlmEngine"
  */
 class LlmEngine(
     private val modelPath: String,
-    private val idleTimeoutMs: Long = 5 * 60 * 1000L
+    private val idleTimeoutMs: Long = 5 * 60 * 1000L,
+    private val contextSize: Int = 2048
 ) : AutoCloseable {
 
     private val mutex = Mutex()
     private var engine: Engine? = null
+    private var currentConversation: com.google.ai.edge.litertlm.Conversation? = null
+    @Volatile private var gpuFailed = false
 
     private val scheduler: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { r ->
@@ -58,8 +61,20 @@ class LlmEngine(
      * Suspends on the IO dispatcher until done.
      */
     suspend fun generate(prompt: String): String = withContext(Dispatchers.IO) {
+        try {
+            doGenerate(prompt)
+        } catch (e: Exception) {
+            if (!gpuFailed && e.message?.contains("OpenCL", ignoreCase = true) == true) {
+                Log.w(TAG, "GPU inference failed at runtime, falling back to CPU: ${e.message}")
+                reloadWithCpu()
+                doGenerate(prompt)
+            } else throw e
+        }
+    }
+
+    private suspend fun doGenerate(prompt: String): String {
         val conv = getConversation()
-        suspendCancellableCoroutine { cont ->
+        return suspendCancellableCoroutine { cont ->
             val sb = StringBuilder()
             conv.sendMessageAsync(prompt, object : MessageCallback {
                 override fun onMessage(message: Message) {
@@ -94,6 +109,10 @@ class LlmEngine(
             }
             override fun onError(t: Throwable) {
                 resetIdleTimer()
+                if (!gpuFailed && t.message?.contains("OpenCL", ignoreCase = true) == true) {
+                    Log.w(TAG, "GPU stream failed at runtime, falling back to CPU: ${t.message}")
+                    // Signal the caller to retry — close with the error so HttpServer retries
+                }
                 close(t)
             }
         })
@@ -103,6 +122,8 @@ class LlmEngine(
     override fun close() {
         idleFuture?.cancel(false)
         scheduler.shutdownNow()
+        runCatching { currentConversation?.close() }
+        currentConversation = null
         runCatching { engine?.close() }
         engine = null
         Log.i(TAG, "LlmEngine closed")
@@ -113,7 +134,11 @@ class LlmEngine(
     private suspend fun getConversation() = mutex.withLock {
         if (engine == null) loadEngine()
         cancelIdleTimer()
-        engine!!.createConversation()
+        // LiteRT-LM only supports one session at a time — close the old one
+        runCatching { currentConversation?.close() }
+        val conv = engine!!.createConversation()
+        currentConversation = conv
+        conv
     }
 
     private fun loadEngine() {
@@ -132,6 +157,19 @@ class LlmEngine(
             engine = cpuEngine
             Log.i(TAG, "Engine ready (CPU)")
         }
+    }
+
+    private suspend fun reloadWithCpu() = mutex.withLock {
+        gpuFailed = true
+        runCatching { currentConversation?.close() }
+        currentConversation = null
+        runCatching { engine?.close() }
+        engine = null
+        Log.i(TAG, "Reloading model with CPU backend: $modelPath")
+        val cpuEngine = Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU()))
+        cpuEngine.initialize()
+        engine = cpuEngine
+        Log.i(TAG, "Engine ready (CPU fallback)")
     }
 
     private fun cancelIdleTimer() {
