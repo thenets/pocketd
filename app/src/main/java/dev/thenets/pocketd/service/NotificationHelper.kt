@@ -32,10 +32,12 @@ object NotificationHelper {
     }
 
     /**
-     * Builds the persistent foreground notification.
+     * Builds the persistent foreground notification with a Stop action.
      * Tapping it brings the user back to [MainActivity].
      */
     fun buildNotification(context: Context, port: Int): Notification {
+        createChannel(context)
+
         val openApp = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
@@ -46,6 +48,17 @@ object NotificationHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Stop action — sends ACTION_STOP to the service
+        val stopIntent = Intent(context, LlmServerService::class.java).apply {
+            action = LlmServerService.ACTION_STOP
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            context,
+            1,
+            stopIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         return NotificationCompat.Builder(context, CHANNEL_ID)
             .setContentTitle(context.getString(R.string.notification_title))
             .setContentText(context.getString(R.string.notification_text_format, port))
@@ -53,6 +66,11 @@ object NotificationHelper {
             .setOngoing(true)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(pendingIntent)
+            .addAction(
+                android.R.drawable.ic_media_pause,
+                "Stop Server",
+                stopPendingIntent
+            )
             .build()
     }
 }
