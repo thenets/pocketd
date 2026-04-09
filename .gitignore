@@ -20,3 +20,7 @@ gradle/wrapper/gradle-wrapper.jar
 *.iml
 .DS_Store
 local.properties
+
+# TUI client
+/tui/node_modules/
+/tui/dist/

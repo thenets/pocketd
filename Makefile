@@ -6,6 +6,9 @@
 #   make setup      Download Android SDK + Gradle into .cache/ (idempotent)
 #   make build      Assemble debug APK  (runs setup if needed)
 #   make emulator   Launch Android emulator (downloads what it needs)
+#   make port-forward Forward TCP 8080 from host to emulator via adb
+#   make tui        Build the TUI chat client (npm install + tsc)
+#   make tui-dev    Build and launch the TUI client
 #   make clean      Delete build outputs
 #   make distclean  Delete build outputs AND .cache/
 #
@@ -33,6 +36,7 @@ EMULATOR_BIN      := $(ANDROID_SDK_DIR)/emulator/emulator
 SYSTEM_IMAGE      := system-images;$(PLATFORM);google_apis;x86_64
 AVD_NAME          := pocketd
 AVD_DEVICE        := pixel_6
+ADB               := $(ANDROID_SDK_DIR)/platform-tools/adb
 
 # ---------- local paths ------------------------------------------------------
 PLATFORM_ZIP     := $(CACHE_DIR)/platform-35_r02.zip
@@ -53,7 +57,8 @@ export GRADLE_USER_HOME := $(abspath $(GRADLE_HOME_DIR))
 
 # =============================================================================
 
-.PHONY: _check _emulator_install setup build emulator clean distclean
+.PHONY: _check _emulator_install setup build emulator port-forward clean distclean \
+       tui tui-dev tui-clean
 
 # -- preflight checks --------------------------------------------------------
 
@@ -152,8 +157,13 @@ build: setup
 	$(GRADLE_BIN) :app:assembleDebug
 	@mkdir -p dist
 	@cp app/build/outputs/apk/debug/app-debug.apk dist/
-	@echo ""
 	@echo "==> APK: dist/app-debug.apk"
+	@if $(ADB) get-state 2>/dev/null | grep -q device; then \
+	    echo "==> Device detected, installing..."; \
+	    $(ADB) install -r dist/app-debug.apk; \
+	    echo "==> Launching app..."; \
+	    $(ADB) shell am start -n dev.thenets.pocketd/.ui.MainActivity; \
+	fi
 
 # =============================================================================
 # Emulator
@@ -198,6 +208,30 @@ emulator: _emulator_install
 	@echo "==> Launching emulator..."
 	$(EMULATOR_BIN) @$(AVD_NAME)
 
+# -- port forwarding ----------------------------------------------------------
+
+port-forward:
+	$(ADB) forward tcp:8080 tcp:8080
+	@echo "==> Forwarding localhost:8080 -> emulator:8080"
+
+# =============================================================================
+# TUI client (Ink / React for CLI)
+# =============================================================================
+
+tui:
+	@echo "==> Building TUI client..."
+	cd tui && npm install --silent && npx tsc
+	@echo "==> TUI built. Run with: node tui/dist/app.js"
+	node tui/dist/app.js
+
+tui-dev:
+	@echo "==> Building and launching TUI..."
+	cd tui && npm install --silent && npx tsc && node dist/app.js
+
+tui-clean:
+	@rm -rf tui/dist tui/node_modules
+	@echo "Cleaned TUI build."
+
 # =============================================================================
 # Clean
 # =============================================================================
@@ -206,6 +240,6 @@ clean:
 	@rm -rf app/build dist
 	@echo "Cleaned build outputs."
 
-distclean: clean
+distclean: clean tui-clean
 	@rm -rf $(CACHE_DIR) $(WRAPPER_JAR)
 	@echo "Cleaned cache."
