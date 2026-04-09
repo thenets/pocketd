@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -96,7 +97,19 @@ class LlmEngine(
      * Runs inference and emits partial tokens as a [Flow].
      * The flow completes when inference finishes, or throws on error.
      */
-    fun generateStream(prompt: String): Flow<String> = callbackFlow {
+    fun generateStream(prompt: String): Flow<String> = kotlinx.coroutines.flow.flow {
+        try {
+            emitAll(doGenerateStream(prompt))
+        } catch (e: Exception) {
+            if (!gpuFailed && e.message?.contains("OpenCL", ignoreCase = true) == true) {
+                Log.w(TAG, "GPU stream failed at runtime, falling back to CPU: ${e.message}")
+                reloadWithCpu()
+                emitAll(doGenerateStream(prompt))
+            } else throw e
+        }
+    }
+
+    private fun doGenerateStream(prompt: String): Flow<String> = callbackFlow {
         val conv = withContext(Dispatchers.IO) { getConversation() }
         conv.sendMessageAsync(prompt, object : MessageCallback {
             override fun onMessage(message: Message) {
@@ -109,10 +122,6 @@ class LlmEngine(
             }
             override fun onError(t: Throwable) {
                 resetIdleTimer()
-                if (!gpuFailed && t.message?.contains("OpenCL", ignoreCase = true) == true) {
-                    Log.w(TAG, "GPU stream failed at runtime, falling back to CPU: ${t.message}")
-                    // Signal the caller to retry — close with the error so HttpServer retries
-                }
                 close(t)
             }
         })
@@ -142,21 +151,25 @@ class LlmEngine(
     }
 
     private fun loadEngine() {
-        Log.i(TAG, "Loading model: $modelPath")
-        // Engine(EngineConfig) — config is passed to constructor in 0.10.0
-        val gpuEngine = Engine(EngineConfig(modelPath = modelPath, backend = Backend.GPU()))
-        try {
-            gpuEngine.initialize()
-            engine = gpuEngine
-            Log.i(TAG, "Engine ready (GPU)")
-        } catch (e: Exception) {
-            Log.w(TAG, "GPU backend failed (${e.message}), retrying with CPU")
-            runCatching { gpuEngine.close() }
-            val cpuEngine = Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU()))
-            cpuEngine.initialize()
-            engine = cpuEngine
-            Log.i(TAG, "Engine ready (CPU)")
+        Log.i(TAG, "Loading model: $modelPath (gpuFailed=$gpuFailed)")
+        if (!gpuFailed) {
+            val gpuEngine = Engine(EngineConfig(modelPath = modelPath, backend = Backend.GPU(), maxNumTokens = contextSize))
+            try {
+                gpuEngine.initialize()
+                engine = gpuEngine
+                Log.i(TAG, "Engine ready (GPU)")
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "GPU backend failed: ${e::class.simpleName}: ${e.message}", e)
+                runCatching { gpuEngine.close() }
+                gpuFailed = true
+            }
         }
+        Log.i(TAG, "Loading with CPU backend…")
+        val cpuEngine = Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU(), maxNumTokens = contextSize))
+        cpuEngine.initialize()
+        engine = cpuEngine
+        Log.i(TAG, "Engine ready (CPU)")
     }
 
     private suspend fun reloadWithCpu() = mutex.withLock {
@@ -166,7 +179,7 @@ class LlmEngine(
         runCatching { engine?.close() }
         engine = null
         Log.i(TAG, "Reloading model with CPU backend: $modelPath")
-        val cpuEngine = Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU()))
+        val cpuEngine = Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU(), maxNumTokens = contextSize))
         cpuEngine.initialize()
         engine = cpuEngine
         Log.i(TAG, "Engine ready (CPU fallback)")

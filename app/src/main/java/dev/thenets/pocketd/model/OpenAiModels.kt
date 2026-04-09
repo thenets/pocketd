@@ -4,12 +4,63 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 
+// ─── Tool definitions (inbound) ───────────────────────────────────────────────
+
+@Serializable
+data class FunctionDefinition(
+    val name: String,
+    val description: String? = null,
+    val parameters: JsonElement? = null   // raw JSON Schema — kept opaque
+)
+
+@Serializable
+data class ToolDefinition(
+    val type: String = "function",
+    val function: FunctionDefinition
+)
+
+// ─── Tool calls (outbound) ────────────────────────────────────────────────────
+
+@Serializable
+data class FunctionCall(
+    val name: String,
+    val arguments: String   // JSON-encoded string per OpenAI spec
+)
+
+@Serializable
+data class ToolCall(
+    val id: String,
+    val type: String = "function",
+    val function: FunctionCall
+)
+
+// ─── Tool call deltas (streaming) ─────────────────────────────────────────────
+
+@Serializable
+data class ToolCallDelta(
+    val index: Int,
+    val id: String? = null,
+    val type: String? = null,
+    val function: FunctionCallDelta? = null
+)
+
+@Serializable
+data class FunctionCallDelta(
+    val name: String? = null,
+    val arguments: String? = null
+)
+
 // ─── Request ──────────────────────────────────────────────────────────────────
 
 @Serializable
 data class ChatMessage(
     val role: String,
-    val content: String
+    val content: String? = null,
+    @SerialName("tool_calls")
+    val toolCalls: List<ToolCall>? = null,
+    @SerialName("tool_call_id")
+    val toolCallId: String? = null,
+    val name: String? = null
 )
 
 @Serializable
@@ -26,8 +77,10 @@ data class ChatCompletionRequest(
     val frequencyPenalty: Double? = null,
     @SerialName("presence_penalty")
     val presencePenalty: Double? = null,
-    // OpenAI allows string or array of strings — use raw JsonElement
-    val stop: JsonElement? = null
+    val stop: JsonElement? = null,
+    val tools: List<ToolDefinition>? = null,
+    @SerialName("tool_choice")
+    val toolChoice: JsonElement? = null
 )
 
 // ─── Non-streaming response ───────────────────────────────────────────────────
@@ -82,7 +135,9 @@ data class StreamChoice(
 @Serializable
 data class Delta(
     val role: String? = null,
-    val content: String? = null
+    val content: String? = null,
+    @SerialName("tool_calls")
+    val toolCalls: List<ToolCallDelta>? = null
 )
 
 // ─── Error response ───────────────────────────────────────────────────────────

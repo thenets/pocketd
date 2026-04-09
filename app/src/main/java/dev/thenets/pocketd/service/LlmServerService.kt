@@ -4,11 +4,14 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import dev.thenets.pocketd.llm.LlmEngine
+import dev.thenets.pocketd.model.ApiLogEntry
 import dev.thenets.pocketd.server.HttpServer
 import dev.thenets.pocketd.util.NetworkAddress
 import dev.thenets.pocketd.util.NetworkUtils
@@ -28,6 +31,7 @@ class LlmServerService : Service() {
         const val EXTRA_BEARER_TOKEN  = "bearer_token"
         const val EXTRA_IDLE_TIMEOUT  = "idle_timeout_ms"
         const val EXTRA_CONTEXT_SIZE  = "context_size"
+        const val ACTION_STOP         = "dev.thenets.pocketd.STOP_SERVER"
 
         const val DEFAULT_MODEL_PATH   = "/sdcard/Download/gemma-4-E2B-it.litertlm"
         const val DEFAULT_PORT         = 8080
@@ -50,7 +54,9 @@ class LlmServerService : Service() {
         }
 
         fun stopIntent(context: Context): Intent =
-            Intent(context, LlmServerService::class.java)
+            Intent(context, LlmServerService::class.java).apply {
+                action = ACTION_STOP
+            }
     }
 
     // ── Binder (for MainActivity to observe state) ─────────────────────────
@@ -72,7 +78,8 @@ class LlmServerService : Service() {
             val port: Int,
             val modelPath: String,
             val addresses: List<NetworkAddress> = emptyList(),
-            val contextSize: Int = DEFAULT_CONTEXT_SIZE
+            val contextSize: Int = DEFAULT_CONTEXT_SIZE,
+            val modelFileSizeMb: Long = 0L
         ) : ServerState()
         data class Error(val message: String) : ServerState()
     }
@@ -80,14 +87,33 @@ class LlmServerService : Service() {
     private val _serverState = MutableStateFlow<ServerState>(ServerState.Stopped)
     val serverState: StateFlow<ServerState> = _serverState.asStateFlow()
 
+    private val _apiLog = MutableStateFlow<List<ApiLogEntry>>(emptyList())
+    val apiLog: StateFlow<List<ApiLogEntry>> = _apiLog.asStateFlow()
+
+    private fun onRequestLogged(entry: ApiLogEntry) {
+        _apiLog.value = (_apiLog.value + entry).takeLast(50)
+    }
+
     // ── Engine & server ────────────────────────────────────────────────────
 
     private var llmEngine:  LlmEngine?  = null
     private var httpServer: HttpServer? = null
 
+    // ── Wake locks ─────────────────────────────────────────────────────────
+
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+
     // ── Service lifecycle ──────────────────────────────────────────────────
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Handle stop action from notification button
+        if (intent?.action == ACTION_STOP) {
+            Log.i(TAG, "Stop requested via notification")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         // intent may be null if system restarts a START_STICKY service
         val modelPath   = intent?.getStringExtra(EXTRA_MODEL_PATH)            ?: DEFAULT_MODEL_PATH
         val port        = intent?.getIntExtra(EXTRA_PORT, DEFAULT_PORT)       ?: DEFAULT_PORT
@@ -105,20 +131,29 @@ class LlmServerService : Service() {
         try {
             tearDown()
 
+            // Acquire locks to keep CPU and WiFi alive
+            acquireWakeLock()
+            acquireWifiLock()
+
             llmEngine  = LlmEngine(modelPath = modelPath, idleTimeoutMs = idleTimeout, contextSize = contextSize)
             httpServer = HttpServer(
-                llmEngine   = llmEngine!!,
-                port        = port,
-                bearerToken = bearerToken
+                llmEngine       = llmEngine!!,
+                port            = port,
+                bearerToken     = bearerToken,
+                onRequestLogged = ::onRequestLogged
             )
             httpServer!!.start()
 
             val addresses = NetworkUtils.getServerAddresses(port)
+            val modelFileSizeMb = runCatching {
+                java.io.File(modelPath).length() / (1024L * 1024L)
+            }.getOrDefault(0L)
             _serverState.value = ServerState.Running(
                 port = port,
                 modelPath = modelPath,
                 addresses = addresses,
-                contextSize = contextSize
+                contextSize = contextSize,
+                modelFileSizeMb = modelFileSizeMb
             )
             Log.i(TAG, "Server running — model=$modelPath port=$port")
         } catch (e: Exception) {
@@ -132,6 +167,8 @@ class LlmServerService : Service() {
 
     override fun onDestroy() {
         tearDown()
+        releaseWakeLock()
+        releaseWifiLock()
         _serverState.value = ServerState.Stopped
         Log.i(TAG, "Service destroyed")
         super.onDestroy()
@@ -152,10 +189,54 @@ class LlmServerService : Service() {
         }
     }
 
+    private fun acquireWakeLock() {
+        if (wakeLock == null) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "pocketd::ServerWakeLock"
+            ).apply {
+                acquire()
+            }
+            Log.i(TAG, "WakeLock acquired")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let {
+            if (it.isHeld) it.release()
+            Log.i(TAG, "WakeLock released")
+        }
+        wakeLock = null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun acquireWifiLock() {
+        if (wifiLock == null) {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            wifiLock = wm.createWifiLock(
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                "pocketd::ServerWifiLock"
+            ).apply {
+                acquire()
+            }
+            Log.i(TAG, "WifiLock acquired")
+        }
+    }
+
+    private fun releaseWifiLock() {
+        wifiLock?.let {
+            if (it.isHeld) it.release()
+            Log.i(TAG, "WifiLock released")
+        }
+        wifiLock = null
+    }
+
     private fun tearDown() {
         runCatching { httpServer?.stop() }
         runCatching { llmEngine?.close() }
         httpServer = null
         llmEngine  = null
+        _apiLog.value = emptyList()
     }
 }
