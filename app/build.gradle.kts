@@ -16,6 +16,12 @@ android {
         targetSdk     = 35
         versionCode   = 1
         versionName   = "1.0.0"
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
     }
 
     buildTypes {
@@ -80,4 +86,19 @@ dependencies {
     // Kotlinx
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+
+    // Unit tests
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+
+    // Instrumented tests
+    androidTestImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    androidTestImplementation("io.ktor:ktor-server-core:2.3.12")
+    androidTestImplementation("io.ktor:ktor-server-netty:2.3.12")
+    androidTestImplementation("io.ktor:ktor-server-content-negotiation:2.3.12")
+    androidTestImplementation("io.ktor:ktor-serialization-kotlinx-json:2.3.12")
 }
