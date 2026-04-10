@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import dev.thenets.pocketd.llm.BackendType
 import dev.thenets.pocketd.llm.LlmEngine
 import dev.thenets.pocketd.model.ApiLogEntry
 import dev.thenets.pocketd.server.HttpServer
@@ -31,6 +32,7 @@ class LlmServerService : Service() {
         const val EXTRA_BEARER_TOKEN  = "bearer_token"
         const val EXTRA_IDLE_TIMEOUT  = "idle_timeout_ms"
         const val EXTRA_CONTEXT_SIZE  = "context_size"
+        const val EXTRA_BACKEND       = "backend"
         const val ACTION_STOP         = "dev.thenets.pocketd.STOP_SERVER"
 
         const val DEFAULT_MODEL_PATH   = "/sdcard/Download/gemma-4-E2B-it.litertlm"
@@ -44,13 +46,15 @@ class LlmServerService : Service() {
             port: Int            = DEFAULT_PORT,
             bearerToken: String? = null,
             idleTimeoutMs: Long  = DEFAULT_IDLE_TIMEOUT,
-            contextSize: Int     = DEFAULT_CONTEXT_SIZE
+            contextSize: Int     = DEFAULT_CONTEXT_SIZE,
+            backend: BackendType = BackendType.GPU_WITH_CPU_FALLBACK
         ): Intent = Intent(context, LlmServerService::class.java).apply {
             putExtra(EXTRA_MODEL_PATH,   modelPath)
             putExtra(EXTRA_PORT,         port)
             putExtra(EXTRA_BEARER_TOKEN, bearerToken)
             putExtra(EXTRA_IDLE_TIMEOUT, idleTimeoutMs)
             putExtra(EXTRA_CONTEXT_SIZE, contextSize)
+            putExtra(EXTRA_BACKEND,      backend.name)
         }
 
         fun stopIntent(context: Context): Intent =
@@ -79,7 +83,8 @@ class LlmServerService : Service() {
             val modelPath: String,
             val addresses: List<NetworkAddress> = emptyList(),
             val contextSize: Int = DEFAULT_CONTEXT_SIZE,
-            val modelFileSizeMb: Long = 0L
+            val modelFileSizeMb: Long = 0L,
+            val backend: BackendType = BackendType.GPU_WITH_CPU_FALLBACK
         ) : ServerState()
         data class Error(val message: String) : ServerState()
     }
@@ -122,6 +127,9 @@ class LlmServerService : Service() {
                           ?: DEFAULT_IDLE_TIMEOUT
         val contextSize = intent?.getIntExtra(EXTRA_CONTEXT_SIZE, DEFAULT_CONTEXT_SIZE)
                           ?: DEFAULT_CONTEXT_SIZE
+        val backend = intent?.getStringExtra(EXTRA_BACKEND)
+            ?.let { runCatching { BackendType.valueOf(it) }.getOrNull() }
+            ?: BackendType.GPU_WITH_CPU_FALLBACK
 
         // Promote to foreground BEFORE doing any work (required by Android 12+)
         promoteToForeground(port)
@@ -135,7 +143,13 @@ class LlmServerService : Service() {
             acquireWakeLock()
             acquireWifiLock()
 
-            llmEngine  = LlmEngine(modelPath = modelPath, idleTimeoutMs = idleTimeout, contextSize = contextSize)
+            llmEngine  = LlmEngine(
+                modelPath = modelPath,
+                idleTimeoutMs = idleTimeout,
+                contextSize = contextSize,
+                backend = backend,
+                nativeLibraryDir = applicationInfo.nativeLibraryDir
+            )
             httpServer = HttpServer(
                 llmEngine       = llmEngine!!,
                 port            = port,
@@ -153,9 +167,10 @@ class LlmServerService : Service() {
                 modelPath = modelPath,
                 addresses = addresses,
                 contextSize = contextSize,
-                modelFileSizeMb = modelFileSizeMb
+                modelFileSizeMb = modelFileSizeMb,
+                backend = backend
             )
-            Log.i(TAG, "Server running — model=$modelPath port=$port")
+            Log.i(TAG, "Server running — model=$modelPath port=$port backend=$backend")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start server", e)
             _serverState.value = ServerState.Error(e.message ?: "Unknown error")
