@@ -74,6 +74,24 @@ make port-forward   # forwards TCP 8080 (emulator → host)
 | `make clean`     | Delete build outputs                                      |
 | `make distclean` | Delete build outputs AND `.cache/`                        |
 
+## Multi-model support
+
+pocketd now supports 9 models from the LiteRT Community Gallery:
+
+| Model | Size | Specialty |
+|-------|------|-----------|
+| **Gemma-4-E2B-it** | 4B | Default, balanced performance |
+| Gemma-4-E4B-it | 4B | Extended variant |
+| Gemma-3n-E2B-it | 3B | Efficient variant |
+| Gemma-3n-E4B-it | 3B | Extended variant |
+| Gemma3-1B-IT | 1B | Ultra-lightweight |
+| Qwen2.5-1.5B-Instruct | 1.5B | Alternative instruction-tuned model |
+| DeepSeek-R1-Distill-Qwen-1.5B | 1.5B | Reasoning-focused distill |
+| TinyGarden-270M | 270M | Ultra-minimal |
+| MobileActions-270M | 270M | Action-oriented ultra-minimal |
+
+Models are stored in `/sdcard/Download/pocketd/<model-name>/<filename>`. Legacy models in `/sdcard/Download/*.litertlm` are still supported.
+
 ## Device control script
 
 `tools/control.py` is a self-contained Python CLI (runs via `uv run --script`) for controlling the app on a connected device/emulator via ADB. It uses `uiautomator` to tap buttons in the app UI and HTTP probes to detect server state.
@@ -85,13 +103,19 @@ make port-forward   # forwards TCP 8080 (emulator → host)
 # Start the server (brings app to foreground, taps Start Server, forwards port)
 ./tools/control.py start
 ./tools/control.py start --backend CPU
-./tools/control.py start --context 4096
+./tools/control.py start --context 4096                          # Larger context (default: 4096)
+./tools/control.py start --top-k 100                             # Configure sampling (default: 64, range: 1-128)
+./tools/control.py start --model Qwen2.5-1.5B-Instruct          # Choose alternative model
 
 # Stop the server
 ./tools/control.py stop
 
 # Restart with different settings
 ./tools/control.py restart --backend GPU
+./tools/control.py restart --top-k 50 --model Gemma3-1B-IT
+
+# List available models
+./tools/control.py models
 
 # Stream live logs (Ctrl+C to stop)
 ./tools/control.py log -f
@@ -103,7 +127,7 @@ make port-forward   # forwards TCP 8080 (emulator → host)
 ./tools/control.py test
 ./tools/control.py test --prompt "Hello world"
 
-# Show model file, app version, permissions, port status
+# Show model files, app version, permissions, port status
 ./tools/control.py info
 
 # Forward port manually
@@ -115,16 +139,20 @@ make port-forward   # forwards TCP 8080 (emulator → host)
 
 The script auto-discovers `adb` from `.cache/android-sdk/platform-tools/adb` and falls back to `PATH`. It auto-scrolls the UI to find buttons that are off-screen.
 
+### New sampler configuration
+
+The `--top-k` flag (range 1-128, default 64) controls the top-K sampling parameter for inference. Smaller values = more deterministic, larger values = more diverse. Set via the UI's Top-K slider.
+
 ## Key source files
 
 | File | Purpose |
 |------|---------|
-| `app/src/main/java/dev/thenets/pocketd/ui/MainActivity.kt` | All Compose UI — main screen, API activity log, request detail, backend selector |
+| `app/src/main/java/dev/thenets/pocketd/ui/MainActivity.kt` | All Compose UI — main screen, API activity log, request detail, model picker, top-K slider, backend selector |
 | `app/src/main/java/dev/thenets/pocketd/server/HttpServer.kt` | Ktor/Netty HTTP server, OpenAI-compatible endpoints, sampler pass-through |
-| `app/src/main/java/dev/thenets/pocketd/service/LlmServerService.kt` | Android foreground service wrapping the HTTP server |
-| `app/src/main/java/dev/thenets/pocketd/llm/LlmEngine.kt` | LiteRT-LM inference engine — BackendType, InferenceParams, ConversationConfig, cancel support |
+| `app/src/main/java/dev/thenets/pocketd/service/LlmServerService.kt` | Android foreground service wrapping the HTTP server — intent extras: EXTRA_TOP_K (Int) |
+| `app/src/main/java/dev/thenets/pocketd/llm/LlmEngine.kt` | LiteRT-LM inference engine — BackendType, InferenceParams (topK parameter), ConversationConfig, cancel support |
 | `app/src/main/java/dev/thenets/pocketd/llm/PromptFormatter.kt` | Converts OpenAI messages to Gemma prompt format, system instruction extraction |
 | `app/src/main/java/dev/thenets/pocketd/llm/ToolCallParser.kt` | Parses `<tool_call>` XML from LLM output into OpenAI tool call format |
 | `app/src/main/java/dev/thenets/pocketd/model/OpenAiModels.kt` | OpenAI-compatible data models — multimodal ChatMessage (JsonElement content), request/response types |
 | `app/src/main/java/dev/thenets/pocketd/model/ApiLogEntry.kt` | Data model for logged HTTP requests |
-| `tools/control.py` | Device controller CLI — start/stop server, status, logs, smoke tests via ADB |
+| `tools/control.py` | Device controller CLI — start/stop server, status, logs, smoke tests, model listing via ADB |
