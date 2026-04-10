@@ -1,8 +1,14 @@
 package dev.thenets.pocketd.model
 
+import android.util.Base64
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 // ─── Tool definitions (inbound) ───────────────────────────────────────────────
 
@@ -52,16 +58,76 @@ data class FunctionCallDelta(
 
 // ─── Request ──────────────────────────────────────────────────────────────────
 
+/**
+ * Chat message with multimodal content support.
+ * `content` can be:
+ *   - a JSON string (simple text message)
+ *   - a JSON array of content parts (OpenAI multipart format with text + image_url)
+ *   - null (for tool_calls-only messages)
+ */
 @Serializable
 data class ChatMessage(
     val role: String,
-    val content: String? = null,
+    val content: JsonElement? = null,
     @SerialName("tool_calls")
     val toolCalls: List<ToolCall>? = null,
     @SerialName("tool_call_id")
     val toolCallId: String? = null,
     val name: String? = null
-)
+) {
+    /**
+     * Extracts the text content from [content], whether it's a plain string
+     * or an array of content parts (picks all "text" type parts).
+     */
+    fun textContent(): String? = when {
+        content == null -> null
+        content is JsonPrimitive -> content.jsonPrimitive.contentOrNull
+        else -> try {
+            content.jsonArray
+                .filter { part ->
+                    val type = part.jsonObject["type"]?.jsonPrimitive?.contentOrNull
+                    type == "text"
+                }
+                .mapNotNull { part ->
+                    part.jsonObject["text"]?.jsonPrimitive?.contentOrNull
+                }
+                .joinToString("")
+                .ifEmpty { null }
+        } catch (_: Exception) { null }
+    }
+
+    /**
+     * Extracts base64-encoded image data from multipart content.
+     * Supports `data:image/...;base64,<data>` format in `image_url.url`.
+     */
+    fun imageParts(): List<ByteArray> {
+        if (content == null || content is JsonPrimitive) return emptyList()
+        return try {
+            content.jsonArray
+                .filter { part ->
+                    part.jsonObject["type"]?.jsonPrimitive?.contentOrNull == "image_url"
+                }
+                .mapNotNull { part ->
+                    val url = part.jsonObject["image_url"]
+                        ?.jsonObject?.get("url")
+                        ?.jsonPrimitive?.contentOrNull
+                        ?: return@mapNotNull null
+                    decodeBase64ImageUrl(url)
+                }
+        } catch (_: Exception) { emptyList() }
+    }
+}
+
+private fun decodeBase64ImageUrl(url: String): ByteArray? {
+    // Format: data:image/png;base64,iVBORw0KGgo...
+    val marker = ";base64,"
+    val idx = url.indexOf(marker)
+    if (idx < 0) return null
+    val base64Data = url.substring(idx + marker.length)
+    return try {
+        Base64.decode(base64Data, Base64.DEFAULT)
+    } catch (_: Exception) { null }
+}
 
 @Serializable
 data class ChatCompletionRequest(
@@ -73,6 +139,8 @@ data class ChatCompletionRequest(
     val maxTokens: Int? = null,
     @SerialName("top_p")
     val topP: Double? = null,
+    @SerialName("top_k")
+    val topK: Int? = null,
     @SerialName("frequency_penalty")
     val frequencyPenalty: Double? = null,
     @SerialName("presence_penalty")
