@@ -15,6 +15,132 @@ import java.net.URL
 
 private const val TAG = "ModelDownloader"
 
+// ── Model catalog ────────────────────────────────────────────────────────────
+
+data class ModelInfo(
+    val name: String,
+    val filename: String,
+    val huggingFaceId: String,
+    val commitHash: String,
+    val sizeBytes: Long,
+    val maxContext: Int,
+    val minRamGb: Int,
+    val defaultTopK: Int = 64,
+    val defaultTopP: Double = 0.95,
+    val defaultTemperature: Double = 1.0,
+    val features: Set<String> = emptySet(),
+) {
+    val url: String
+        get() = "https://huggingface.co/$huggingFaceId/resolve/$commitHash/$filename"
+    val sizeMb: Int
+        get() = (sizeBytes / (1024L * 1024L)).toInt()
+    val dir: String
+        get() = "$MODEL_DIR/$name"
+    val path: String
+        get() = "$dir/$filename"
+}
+
+const val MODEL_DIR = "/sdcard/Download/pocketd"
+
+val AVAILABLE_MODELS = listOf(
+    ModelInfo(
+        name = "Gemma-4-E2B-it",
+        filename = "gemma-4-E2B-it.litertlm",
+        huggingFaceId = "litert-community/gemma-4-E2B-it-litert-lm",
+        commitHash = "7fa1d78473894f7e736a21d920c3aa80f950c0db",
+        sizeBytes = 2_583_085_056L,
+        maxContext = 32768,
+        minRamGb = 8,
+        features = setOf("image", "audio", "thinking"),
+    ),
+    ModelInfo(
+        name = "Gemma-4-E4B-it",
+        filename = "gemma-4-E4B-it.litertlm",
+        huggingFaceId = "litert-community/gemma-4-E4B-it-litert-lm",
+        commitHash = "9695417f248178c63a9f318c6e0c56cb917cb837",
+        sizeBytes = 3_654_467_584L,
+        maxContext = 32768,
+        minRamGb = 12,
+        features = setOf("image", "audio", "thinking"),
+    ),
+    ModelInfo(
+        name = "Gemma-3n-E2B-it",
+        filename = "gemma-3n-E2B-it-int4.litertlm",
+        huggingFaceId = "google/gemma-3n-E2B-it-litert-lm",
+        commitHash = "ba9ca88da013b537b6ed38108be609b8db1c3a16",
+        sizeBytes = 3_655_827_456L,
+        maxContext = 4096,
+        minRamGb = 8,
+        features = setOf("image", "audio"),
+    ),
+    ModelInfo(
+        name = "Gemma-3n-E4B-it",
+        filename = "gemma-3n-E4B-it-int4.litertlm",
+        huggingFaceId = "google/gemma-3n-E4B-it-litert-lm",
+        commitHash = "297ed75955702dec3503e00c2c2ecbbf475300bc",
+        sizeBytes = 4_919_541_760L,
+        maxContext = 4096,
+        minRamGb = 12,
+        features = setOf("image", "audio"),
+    ),
+    ModelInfo(
+        name = "Gemma3-1B-IT",
+        filename = "gemma3-1b-it-int4.litertlm",
+        huggingFaceId = "litert-community/Gemma3-1B-IT",
+        commitHash = "42d538a932e8d5b12e6b3b455f5572560bd60b2c",
+        sizeBytes = 584_417_280L,
+        maxContext = 1024,
+        minRamGb = 6,
+    ),
+    ModelInfo(
+        name = "Qwen2.5-1.5B-Instruct",
+        filename = "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
+        huggingFaceId = "litert-community/Qwen2.5-1.5B-Instruct",
+        commitHash = "19edb84c69a0212f29a6ef17ba0d6f278b6a1614",
+        sizeBytes = 1_597_931_520L,
+        maxContext = 4096,
+        minRamGb = 6,
+        defaultTopK = 20,
+        defaultTopP = 0.8,
+        defaultTemperature = 0.7,
+    ),
+    ModelInfo(
+        name = "DeepSeek-R1-Distill-Qwen-1.5B",
+        filename = "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
+        huggingFaceId = "litert-community/DeepSeek-R1-Distill-Qwen-1.5B",
+        commitHash = "e34bb88632342d1f9640bad579a45134eb1cf988",
+        sizeBytes = 1_833_451_520L,
+        maxContext = 4096,
+        minRamGb = 6,
+    ),
+    ModelInfo(
+        name = "TinyGarden-270M",
+        filename = "tiny_garden_q8_ekv1024.litertlm",
+        huggingFaceId = "litert-community/functiongemma-270m-ft-tiny-garden",
+        commitHash = "c205853ff82da86141a1105faa2344a8b176dfe7",
+        sizeBytes = 288_964_608L,
+        maxContext = 1024,
+        minRamGb = 6,
+        defaultTemperature = 0.0,
+        features = setOf("function-calling"),
+    ),
+    ModelInfo(
+        name = "MobileActions-270M",
+        filename = "mobile_actions_q8_ekv1024.litertlm",
+        huggingFaceId = "litert-community/functiongemma-270m-ft-mobile-actions",
+        commitHash = "38942192c9b723af836d489074823ff33d4a3e7a",
+        sizeBytes = 288_964_608L,
+        maxContext = 1024,
+        minRamGb = 6,
+        defaultTemperature = 0.0,
+        features = setOf("function-calling"),
+    ),
+)
+
+val DEFAULT_MODEL = AVAILABLE_MODELS[0] // Gemma-4-E2B-it
+
+// ── Download state ───────────────────────────────────────────────────────────
+
 sealed class DownloadState {
     object Idle : DownloadState()
     data class Downloading(
@@ -37,11 +163,16 @@ sealed class DownloadState {
 class ModelDownloader {
 
     companion object {
+        // Legacy constants for backward compatibility
         const val MODEL_FILENAME = "gemma-4-E2B-it.litertlm"
+        @Deprecated("Use ModelInfo.path instead")
         const val MODEL_DIR = "/sdcard/Download"
-        const val MODEL_PATH = "$MODEL_DIR/$MODEL_FILENAME"
+        @Deprecated("Use ModelInfo.path instead")
+        const val MODEL_PATH = "/sdcard/Download/pocketd/Gemma-4-E2B-it/gemma-4-E2B-it.litertlm"
         const val MODEL_URL = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm"
     }
+
+    var selectedModel: ModelInfo = DEFAULT_MODEL
 
     private val _state = MutableStateFlow<DownloadState>(DownloadState.Idle)
     val state: StateFlow<DownloadState> = _state.asStateFlow()
@@ -52,22 +183,38 @@ class ModelDownloader {
     var downloadJob: Job? = null
 
     fun checkModelExists(): Boolean {
-        val file = File(MODEL_PATH)
-        val exists = file.exists() && file.length() > 0
+        // Check new path first, then legacy path for backward compat
+        val model = selectedModel
+        val file = File(model.path)
+        val legacyFile = File("/sdcard/Download/${model.filename}")
+        val exists = (file.exists() && file.length() > 0) ||
+                     (legacyFile.exists() && legacyFile.length() > 0)
         _state.value = if (exists) DownloadState.Complete else DownloadState.Idle
         return exists
     }
 
+    /** Returns the actual path where the model file exists (new or legacy location). */
+    fun resolveModelPath(): String {
+        val model = selectedModel
+        val file = File(model.path)
+        if (file.exists() && file.length() > 0) return model.path
+        val legacyFile = File("/sdcard/Download/${model.filename}")
+        if (legacyFile.exists() && legacyFile.length() > 0) return legacyFile.absolutePath
+        return model.path
+    }
+
     suspend fun download(hfToken: String? = null) = withContext(Dispatchers.IO) {
         cancelled = false
-        val tmpFile = File("$MODEL_PATH.tmp")
+        val model = selectedModel
+        val modelPath = model.path
+        val tmpFile = File("$modelPath.tmp")
         var connection: HttpURLConnection? = null
 
         try {
             // Clean up any previous partial download
             tmpFile.delete()
 
-            val url = URL(MODEL_URL)
+            val url = URL(model.url)
             connection = url.openConnection() as HttpURLConnection
             connection.connectTimeout = 15_000
             connection.readTimeout = 60_000
@@ -101,7 +248,7 @@ class ModelDownloader {
 
             _state.value = DownloadState.Downloading(0, totalBytes, 0, 0)
 
-            File(MODEL_DIR).mkdirs()
+            File(model.dir).mkdirs()
             connection.inputStream.buffered().use { input ->
                 FileOutputStream(tmpFile).buffered().use { output ->
                     val buffer = ByteArray(8192)
@@ -151,14 +298,14 @@ class ModelDownloader {
             }
 
             // Atomic rename
-            if (!tmpFile.renameTo(File(MODEL_PATH))) {
+            if (!tmpFile.renameTo(File(modelPath))) {
                 tmpFile.delete()
                 _state.value = DownloadState.Failed("Failed to save model file")
                 return@withContext
             }
 
             _state.value = DownloadState.Complete
-            Log.i(TAG, "Download complete: $MODEL_PATH (${bytesDownloaded} bytes)")
+            Log.i(TAG, "Download complete: $modelPath (${bytesDownloaded} bytes)")
 
         } catch (e: CancellationException) {
             tmpFile.delete()

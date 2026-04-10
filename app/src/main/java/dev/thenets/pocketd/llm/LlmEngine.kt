@@ -35,7 +35,7 @@ private const val TAG = "LlmEngine"
 enum class BackendType { CPU, GPU, NPU, GPU_WITH_CPU_FALLBACK }
 
 data class InferenceParams(
-    val topK: Int = 40,
+    val topK: Int = 64,
     val topP: Double = 0.95,
     val temperature: Double = 1.0,
     val systemInstruction: String? = null,
@@ -239,7 +239,7 @@ open class LlmEngine(
         runCatching { currentConversation?.close() }
 
         // Sampler parameters (only set if non-default values provided)
-        val hasSamplerOverrides = params.topK != 40 || params.topP != 0.95 || params.temperature != 1.0
+        val hasSamplerOverrides = params.topK != 64 || params.topP != 0.95 || params.temperature != 1.0
         val hasSystemInstruction = params.systemInstruction != null
         val hasConfig = hasSamplerOverrides || hasSystemInstruction
 
