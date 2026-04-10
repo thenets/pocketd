@@ -74,12 +74,57 @@ make port-forward   # forwards TCP 8080 (emulator → host)
 | `make clean`     | Delete build outputs                                      |
 | `make distclean` | Delete build outputs AND `.cache/`                        |
 
+## Device control script
+
+`tools/control.py` is a self-contained Python CLI (runs via `uv run --script`) for controlling the app on a connected device/emulator via ADB. It uses `uiautomator` to tap buttons in the app UI and HTTP probes to detect server state.
+
+```bash
+# Show device info + server status (running/stopped, port, backend, RAM)
+./tools/control.py status
+
+# Start the server (brings app to foreground, taps Start Server, forwards port)
+./tools/control.py start
+./tools/control.py start --backend CPU
+./tools/control.py start --context 4096
+
+# Stop the server
+./tools/control.py stop
+
+# Restart with different settings
+./tools/control.py restart --backend GPU
+
+# Stream live logs (Ctrl+C to stop)
+./tools/control.py log -f
+
+# View last N log lines
+./tools/control.py log -n 50
+
+# Run smoke tests (models, chat, streaming, system instructions)
+./tools/control.py test
+./tools/control.py test --prompt "Hello world"
+
+# Show model file, app version, permissions, port status
+./tools/control.py info
+
+# Forward port manually
+./tools/control.py forward
+
+# Tap any UI element by its text
+./tools/control.py ui-tap "Start Server"
+```
+
+The script auto-discovers `adb` from `.cache/android-sdk/platform-tools/adb` and falls back to `PATH`. It auto-scrolls the UI to find buttons that are off-screen.
+
 ## Key source files
 
 | File | Purpose |
 |------|---------|
-| `app/src/main/java/dev/thenets/pocketd/ui/MainActivity.kt` | All Compose UI — main screen, API activity log, request detail |
-| `app/src/main/java/dev/thenets/pocketd/server/HttpServer.kt` | Ktor/Netty HTTP server, OpenAI-compatible endpoints |
+| `app/src/main/java/dev/thenets/pocketd/ui/MainActivity.kt` | All Compose UI — main screen, API activity log, request detail, backend selector |
+| `app/src/main/java/dev/thenets/pocketd/server/HttpServer.kt` | Ktor/Netty HTTP server, OpenAI-compatible endpoints, sampler pass-through |
 | `app/src/main/java/dev/thenets/pocketd/service/LlmServerService.kt` | Android foreground service wrapping the HTTP server |
-| `app/src/main/java/dev/thenets/pocketd/llm/LlmEngine.kt` | LiteRT-LM inference engine wrapper |
+| `app/src/main/java/dev/thenets/pocketd/llm/LlmEngine.kt` | LiteRT-LM inference engine — BackendType, InferenceParams, ConversationConfig, cancel support |
+| `app/src/main/java/dev/thenets/pocketd/llm/PromptFormatter.kt` | Converts OpenAI messages to Gemma prompt format, system instruction extraction |
+| `app/src/main/java/dev/thenets/pocketd/llm/ToolCallParser.kt` | Parses `<tool_call>` XML from LLM output into OpenAI tool call format |
+| `app/src/main/java/dev/thenets/pocketd/model/OpenAiModels.kt` | OpenAI-compatible data models — multimodal ChatMessage (JsonElement content), request/response types |
 | `app/src/main/java/dev/thenets/pocketd/model/ApiLogEntry.kt` | Data model for logged HTTP requests |
+| `tools/control.py` | Device controller CLI — start/stop server, status, logs, smoke tests via ADB |
