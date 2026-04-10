@@ -1,6 +1,8 @@
 package dev.thenets.pocketd.server
 
 import android.util.Log
+import dev.thenets.pocketd.llm.ContentPart
+import dev.thenets.pocketd.llm.InferenceParams
 import dev.thenets.pocketd.llm.LlmEngine
 import dev.thenets.pocketd.llm.PromptFormatter
 import dev.thenets.pocketd.llm.ToolCallParser
@@ -35,6 +37,7 @@ import io.ktor.server.routing.routing
 import kotlinx.coroutines.flow.catch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import java.util.UUID
 
 private const val TAG = "HttpServer"
@@ -111,13 +114,33 @@ class HttpServer(
                         return@post
                     }
 
-                    val prompt    = PromptFormatter.format(req.messages, req.tools ?: emptyList())
+                    // ── Extract system instruction for native ConversationConfig ──
+                    val systemInstruction = PromptFormatter.extractSystemInstruction(req.messages)
+
+                    // ── Build InferenceParams from request ────────────────────────
+                    val inferenceParams = InferenceParams(
+                        topK = req.topK ?: 40,
+                        topP = req.topP ?: 0.95,
+                        temperature = req.temperature ?: 1.0,
+                        systemInstruction = systemInstruction,
+                        tools = req.tools ?: emptyList()
+                    )
+
+                    // ── Build content parts (text + images) from last user message ──
+                    val contentParts = buildContentParts(req.messages)
+
+                    // ── Format prompt (skip system messages — handled natively) ───
+                    val prompt = PromptFormatter.formatWithoutSystem(req.messages, req.tools ?: emptyList())
+
                     val requestId = "chatcmpl-${UUID.randomUUID()}"
                     val created   = System.currentTimeMillis() / 1000L
                     val modelName = req.model.ifBlank { "local" }
 
                     val hasTools   = !req.tools.isNullOrEmpty()
-                    val toolChoice = req.toolChoice?.toString()?.trim('"')  // "auto", "none", or object
+                    val toolChoice = req.toolChoice?.toString()?.trim('"')
+
+                    // Decide whether to use structured content (images present) or text-only prompt
+                    val hasImages = contentParts.any { it.imageBytes != null }
 
                     if (req.stream) {
                         // ── SSE streaming ────────────────────────────────
@@ -131,11 +154,15 @@ class HttpServer(
 
                             var errorOccurred = false
 
+                            // Choose input: structured content for images, text prompt otherwise
+                            val inputContents = if (hasImages) contentParts
+                                else listOf(ContentPart(text = prompt))
+
                             if (hasTools && toolChoice != "none") {
                                 // Buffer full output so we can detect tool calls before emitting
                                 val fullOutput = StringBuilder()
                                 try {
-                                    llmEngine.generateStream(prompt)
+                                    llmEngine.generateStream(inputContents, inferenceParams)
                                         .catch { e ->
                                             Log.e(TAG, "Stream error", e)
                                             errorOccurred = true
@@ -146,16 +173,21 @@ class HttpServer(
                                                 try { write("data: [ERROR]\n\n"); flush() } catch (_: Exception) {}
                                             }
                                         }
-                                        .collect { token -> tokenCount++; fullOutput.append(token) }
+                                        .collect { token ->
+                                            if (!token.done) { tokenCount++; fullOutput.append(token.text) }
+                                            if (token.thinkingText != null) {
+                                                Log.d(TAG, "Thinking: ${token.thinkingText}")
+                                            }
+                                        }
                                 } catch (e: Exception) {
                                     Log.e(TAG, "SSE write error", e)
                                     errorOccurred = true
+                                    llmEngine.cancelGeneration()
                                 }
 
                                 if (!errorOccurred) {
                                     val parsedCall = ToolCallParser.parse(fullOutput.toString())
                                     if (parsedCall != null) {
-                                        // Emit tool call as a single delta chunk
                                         val tcChunk = ChatCompletionChunk(
                                             id = requestId, created = created, model = modelName,
                                             choices = listOf(
@@ -183,7 +215,6 @@ class HttpServer(
                                         )
                                         write("data: ${json.encodeToString(stopChunk)}\n\n"); flush()
                                     } else {
-                                        // No tool call — emit buffered content as one chunk
                                         val contentChunk = ChatCompletionChunk(
                                             id = requestId, created = created, model = modelName,
                                             choices = listOf(StreamChoice(0, Delta(content = fullOutput.toString()), null))
@@ -199,7 +230,7 @@ class HttpServer(
                             } else {
                                 // No tools — stream tokens directly
                                 try {
-                                    llmEngine.generateStream(prompt)
+                                    llmEngine.generateStream(inputContents, inferenceParams)
                                         .catch { e ->
                                             Log.e(TAG, "Stream error", e)
                                             errorOccurred = true
@@ -211,16 +242,22 @@ class HttpServer(
                                             }
                                         }
                                         .collect { token ->
-                                            tokenCount++
-                                            val chunk = ChatCompletionChunk(
-                                                id = requestId, created = created, model = modelName,
-                                                choices = listOf(StreamChoice(0, Delta(content = token), null))
-                                            )
-                                            write("data: ${json.encodeToString(chunk)}\n\n"); flush()
+                                            if (!token.done && token.text.isNotEmpty()) {
+                                                tokenCount++
+                                                val chunk = ChatCompletionChunk(
+                                                    id = requestId, created = created, model = modelName,
+                                                    choices = listOf(StreamChoice(0, Delta(content = token.text), null))
+                                                )
+                                                write("data: ${json.encodeToString(chunk)}\n\n"); flush()
+                                            }
+                                            if (token.thinkingText != null) {
+                                                Log.d(TAG, "Thinking: ${token.thinkingText}")
+                                            }
                                         }
                                 } catch (e: Exception) {
                                     Log.e(TAG, "SSE write error", e)
                                     errorOccurred = true
+                                    llmEngine.cancelGeneration()
                                 }
 
                                 if (!errorOccurred) {
@@ -238,15 +275,22 @@ class HttpServer(
                     } else {
                         // ── Non-streaming ─────────────────────────────────
                         try {
-                            val output = llmEngine.generate(prompt)
+                            val inputContents = if (hasImages) contentParts
+                                else listOf(ContentPart(text = prompt))
+
+                            val result = llmEngine.generate(inputContents, inferenceParams)
+
+                            if (result.thinkingText != null) {
+                                Log.d(TAG, "Thinking: ${result.thinkingText}")
+                            }
 
                             val parsedCall = if (hasTools && toolChoice != "none")
-                                ToolCallParser.parse(output) else null
+                                ToolCallParser.parse(result.text) else null
 
                             val (responseMessage, finishReason) = if (parsedCall != null) {
                                 ChatMessage(role = "assistant", toolCalls = listOf(parsedCall)) to "tool_calls"
                             } else {
-                                ChatMessage(role = "assistant", content = output) to "stop"
+                                ChatMessage(role = "assistant", content = JsonPrimitive(result.text)) to "stop"
                             }
 
                             val response = ChatCompletionResponse(
@@ -287,4 +331,23 @@ class HttpServer(
         server = null
         Log.i(TAG, "HTTP server stopped")
     }
+}
+
+/**
+ * Builds [ContentPart] list from the conversation messages.
+ * Collects text from the formatted prompt and images from the last user message.
+ */
+private fun buildContentParts(messages: List<ChatMessage>): List<ContentPart> {
+    val parts = mutableListOf<ContentPart>()
+
+    // Collect images from all user messages (primarily the last one)
+    val lastUserMsg = messages.lastOrNull { it.role == "user" }
+    if (lastUserMsg != null) {
+        val images = lastUserMsg.imageParts()
+        for (imageBytes in images) {
+            parts.add(ContentPart(imageBytes = imageBytes))
+        }
+    }
+
+    return parts
 }
