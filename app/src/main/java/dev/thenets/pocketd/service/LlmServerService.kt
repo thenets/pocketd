@@ -33,12 +33,14 @@ class LlmServerService : Service() {
         const val EXTRA_IDLE_TIMEOUT  = "idle_timeout_ms"
         const val EXTRA_CONTEXT_SIZE  = "context_size"
         const val EXTRA_BACKEND       = "backend"
+        const val EXTRA_TOP_K         = "top_k"
         const val ACTION_STOP         = "dev.thenets.pocketd.STOP_SERVER"
 
-        const val DEFAULT_MODEL_PATH   = "/sdcard/Download/gemma-4-E2B-it.litertlm"
+        const val DEFAULT_MODEL_PATH   = "/sdcard/Download/pocketd/Gemma-4-E2B-it/gemma-4-E2B-it.litertlm"
         const val DEFAULT_PORT         = 8080
         const val DEFAULT_IDLE_TIMEOUT = 5 * 60 * 1000L
-        const val DEFAULT_CONTEXT_SIZE = 2048
+        const val DEFAULT_CONTEXT_SIZE = 4096
+        const val DEFAULT_TOP_K        = 64
 
         fun startIntent(
             context: Context,
@@ -47,7 +49,8 @@ class LlmServerService : Service() {
             bearerToken: String? = null,
             idleTimeoutMs: Long  = DEFAULT_IDLE_TIMEOUT,
             contextSize: Int     = DEFAULT_CONTEXT_SIZE,
-            backend: BackendType = BackendType.GPU_WITH_CPU_FALLBACK
+            backend: BackendType = BackendType.GPU_WITH_CPU_FALLBACK,
+            topK: Int            = DEFAULT_TOP_K
         ): Intent = Intent(context, LlmServerService::class.java).apply {
             putExtra(EXTRA_MODEL_PATH,   modelPath)
             putExtra(EXTRA_PORT,         port)
@@ -55,6 +58,7 @@ class LlmServerService : Service() {
             putExtra(EXTRA_IDLE_TIMEOUT, idleTimeoutMs)
             putExtra(EXTRA_CONTEXT_SIZE, contextSize)
             putExtra(EXTRA_BACKEND,      backend.name)
+            putExtra(EXTRA_TOP_K,        topK)
         }
 
         fun stopIntent(context: Context): Intent =
@@ -130,6 +134,7 @@ class LlmServerService : Service() {
         val backend = intent?.getStringExtra(EXTRA_BACKEND)
             ?.let { runCatching { BackendType.valueOf(it) }.getOrNull() }
             ?: BackendType.GPU_WITH_CPU_FALLBACK
+        val topK = intent?.getIntExtra(EXTRA_TOP_K, DEFAULT_TOP_K) ?: DEFAULT_TOP_K
 
         // Promote to foreground BEFORE doing any work (required by Android 12+)
         promoteToForeground(port)
@@ -154,6 +159,7 @@ class LlmServerService : Service() {
                 llmEngine       = llmEngine!!,
                 port            = port,
                 bearerToken     = bearerToken,
+                defaultTopK     = topK,
                 onRequestLogged = ::onRequestLogged
             )
             httpServer!!.start()

@@ -56,6 +56,7 @@ class HttpServer(
     private val port: Int = 8080,
     private val host: String = "0.0.0.0",
     private val bearerToken: String? = null,
+    private val defaultTopK: Int = 64,
     private val onRequestLogged: ((ApiLogEntry) -> Unit)? = null
 ) {
     private var server: ApplicationEngine? = null
@@ -119,7 +120,7 @@ class HttpServer(
 
                     // ── Build InferenceParams from request ────────────────────────
                     val inferenceParams = InferenceParams(
-                        topK = req.topK ?: 40,
+                        topK = req.topK ?: defaultTopK,
                         topP = req.topP ?: 0.95,
                         temperature = req.temperature ?: 1.0,
                         systemInstruction = systemInstruction,
