@@ -99,6 +99,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import dev.thenets.pocketd.download.DownloadState
 import dev.thenets.pocketd.download.ModelDownloader
+import dev.thenets.pocketd.llm.BackendType
 import dev.thenets.pocketd.model.ApiLogEntry
 import dev.thenets.pocketd.service.LlmServerService
 import dev.thenets.pocketd.ui.theme.PocketdTheme
@@ -241,6 +242,7 @@ class MainActivity : ComponentActivity() {
     private var token   by mutableStateOf("")
     private var hfToken by mutableStateOf("")
     private var selectedContextSize by mutableStateOf(CONTEXT_SIZE_OPTIONS[2]) // overridden in onCreate
+    private var selectedBackend by mutableStateOf(BackendType.GPU_WITH_CPU_FALLBACK)
     private var storagePermissionGranted by mutableStateOf(false)
 
     private fun checkStoragePermission(): Boolean =
@@ -310,6 +312,7 @@ class MainActivity : ComponentActivity() {
                         token                    = token,
                         hfToken                  = hfToken,
                         selectedContextSize      = selectedContextSize,
+                        selectedBackend          = selectedBackend,
                         storagePermissionGranted = storagePermissionGranted,
                         onPortChange             = { port = it },
                         onTokenChange            = { token = it },
@@ -318,6 +321,7 @@ class MainActivity : ComponentActivity() {
                             prefs.edit().putString("hf_token", it).apply()
                         },
                         onContextSizeChange      = { selectedContextSize = it },
+                        onBackendChange          = { selectedBackend = it },
                         onStartClick             = { startServer() },
                         onStopClick              = { stopServer() },
                         onDownloadClick          = { startDownload() },
@@ -369,7 +373,8 @@ class MainActivity : ComponentActivity() {
                 modelPath   = ModelDownloader.MODEL_PATH,
                 port        = portInt,
                 bearerToken = token.ifBlank { null },
-                contextSize = selectedContextSize.tokens
+                contextSize = selectedContextSize.tokens,
+                backend     = selectedBackend
             )
         )
     }
@@ -454,11 +459,13 @@ private fun ServerControlScreen(
     token: String,
     hfToken: String,
     selectedContextSize: ContextSizeOption,
+    selectedBackend: BackendType,
     storagePermissionGranted: Boolean,
     onPortChange: (String) -> Unit,
     onTokenChange: (String) -> Unit,
     onHfTokenChange: (String) -> Unit,
     onContextSizeChange: (ContextSizeOption) -> Unit,
+    onBackendChange: (BackendType) -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit,
     onDownloadClick: () -> Unit,
@@ -542,11 +549,13 @@ private fun ServerControlScreen(
                 port = port,
                 token = token,
                 selectedContextSize = selectedContextSize,
+                selectedBackend = selectedBackend,
                 isRunning = isRunning,
                 modelReady = modelReady,
                 onPortChange = onPortChange,
                 onTokenChange = onTokenChange,
                 onContextSizeChange = onContextSizeChange,
+                onBackendChange = onBackendChange,
                 onStartClick = onStartClick,
                 onStopClick = onStopClick
             )
@@ -1312,11 +1321,13 @@ private fun ConfigurationCard(
     port: String,
     token: String,
     selectedContextSize: ContextSizeOption,
+    selectedBackend: BackendType,
     isRunning: Boolean,
     modelReady: Boolean,
     onPortChange: (String) -> Unit,
     onTokenChange: (String) -> Unit,
     onContextSizeChange: (ContextSizeOption) -> Unit,
+    onBackendChange: (BackendType) -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit
 ) {
@@ -1324,10 +1335,11 @@ private fun ConfigurationCard(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Configuration", style = MaterialTheme.typography.titleMedium)
 
-            var expanded by remember { mutableStateOf(false) }
+            // Context size dropdown
+            var contextExpanded by remember { mutableStateOf(false) }
             ExposedDropdownMenuBox(
-                expanded = expanded,
-                onExpandedChange = { if (!isRunning) expanded = it }
+                expanded = contextExpanded,
+                onExpandedChange = { if (!isRunning) contextExpanded = it }
             ) {
                 OutlinedTextField(
                     value = "${selectedContextSize.label} (+${selectedContextSize.estimatedRamMb} MB KV cache)",
@@ -1335,10 +1347,10 @@ private fun ConfigurationCard(
                     readOnly = true,
                     enabled = !isRunning,
                     label = { Text("Context size") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(contextExpanded) },
                     modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable)
                 )
-                ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                ExposedDropdownMenu(expanded = contextExpanded, onDismissRequest = { contextExpanded = false }) {
                     CONTEXT_SIZE_OPTIONS.forEach { option ->
                         DropdownMenuItem(
                             text = {
@@ -1350,7 +1362,40 @@ private fun ConfigurationCard(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             },
-                            onClick = { onContextSizeChange(option); expanded = false }
+                            onClick = { onContextSizeChange(option); contextExpanded = false }
+                        )
+                    }
+                }
+            }
+
+            // Backend selector dropdown
+            var backendExpanded by remember { mutableStateOf(false) }
+            ExposedDropdownMenuBox(
+                expanded = backendExpanded,
+                onExpandedChange = { if (!isRunning) backendExpanded = it }
+            ) {
+                OutlinedTextField(
+                    value = selectedBackend.displayLabel(),
+                    onValueChange = {},
+                    readOnly = true,
+                    enabled = !isRunning,
+                    label = { Text("Inference backend") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(backendExpanded) },
+                    modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                )
+                ExposedDropdownMenu(expanded = backendExpanded, onDismissRequest = { backendExpanded = false }) {
+                    BackendType.entries.forEach { backend ->
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(backend.displayLabel(),
+                                        style = MaterialTheme.typography.bodyLarge)
+                                    Text(backend.displayDescription(),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            },
+                            onClick = { onBackendChange(backend); backendExpanded = false }
                         )
                     }
                 }
@@ -1382,6 +1427,20 @@ private fun ConfigurationCard(
             }
         }
     }
+}
+
+private fun BackendType.displayLabel(): String = when (this) {
+    BackendType.CPU -> "CPU"
+    BackendType.GPU -> "GPU"
+    BackendType.NPU -> "NPU"
+    BackendType.GPU_WITH_CPU_FALLBACK -> "GPU with CPU fallback"
+}
+
+private fun BackendType.displayDescription(): String = when (this) {
+    BackendType.CPU -> "Slower but most compatible"
+    BackendType.GPU -> "Fast — requires OpenCL support"
+    BackendType.NPU -> "Fastest — Tensor chip devices only"
+    BackendType.GPU_WITH_CPU_FALLBACK -> "Try GPU first, fall back to CPU if unavailable"
 }
 
 // ── API Activity Log Screen ───────────────────────────────────────────────────
