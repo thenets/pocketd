@@ -18,6 +18,7 @@ Usage:
     ./tools/control.py forward [--port PORT]
     ./tools/control.py test [--prompt TEXT]
     ./tools/control.py info
+    ./tools/control.py models
     ./tools/control.py ui-tap BUTTON_TEXT
 """
 from __future__ import annotations
@@ -43,11 +44,26 @@ PACKAGE = "dev.thenets.pocketd"
 SERVICE = f"{PACKAGE}/.service.LlmServerService"
 ACTIVITY = f"{PACKAGE}/.ui.MainActivity"
 ACTION_STOP = f"{PACKAGE}.STOP_SERVER"
-DEFAULT_MODEL = "/sdcard/Download/gemma-4-E2B-it.litertlm"
+DEFAULT_MODEL = "/sdcard/Download/pocketd/Gemma-4-E2B-it/gemma-4-E2B-it.litertlm"
+LEGACY_MODEL = "/sdcard/Download/gemma-4-E2B-it.litertlm"
 DEFAULT_PORT = 8080
-DEFAULT_CONTEXT = 2048
+DEFAULT_CONTEXT = 4096
+DEFAULT_TOP_K = 64
 DEFAULT_BACKEND = "GPU_WITH_CPU_FALLBACK"
 BACKENDS = ["CPU", "GPU", "NPU", "GPU_WITH_CPU_FALLBACK"]
+
+# Available models in the Gallery
+AVAILABLE_MODELS = {
+    "Gemma-4-E2B-it": "/sdcard/Download/pocketd/Gemma-4-E2B-it/gemma-4-E2B-it.litertlm",
+    "Gemma-4-E4B-it": "/sdcard/Download/pocketd/Gemma-4-E4B-it/gemma-4-E4B-it.litertlm",
+    "Gemma-3n-E2B-it": "/sdcard/Download/pocketd/Gemma-3n-E2B-it/gemma-3n-E2B-it.litertlm",
+    "Gemma-3n-E4B-it": "/sdcard/Download/pocketd/Gemma-3n-E4B-it/gemma-3n-E4B-it.litertlm",
+    "Gemma3-1B-IT": "/sdcard/Download/pocketd/Gemma3-1B-IT/gemma3-1b-it.litertlm",
+    "Qwen2.5-1.5B-Instruct": "/sdcard/Download/pocketd/Qwen2.5-1.5B-Instruct/qwen2.5-1.5b-instruct.litertlm",
+    "DeepSeek-R1-Distill-Qwen-1.5B": "/sdcard/Download/pocketd/DeepSeek-R1-Distill-Qwen-1.5B/deepseek-r1-distill-qwen-1.5b.litertlm",
+    "TinyGarden-270M": "/sdcard/Download/pocketd/TinyGarden-270M/tinygarden-270m.litertlm",
+    "MobileActions-270M": "/sdcard/Download/pocketd/MobileActions-270M/mobileactions-270m.litertlm",
+}
 
 # Locate ADB relative to this script (project root / .cache / …)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -294,6 +310,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     port = args.port or DEFAULT_PORT
     backend = args.backend or DEFAULT_BACKEND
     context = args.context or DEFAULT_CONTEXT
+    top_k = args.top_k or DEFAULT_TOP_K
     model = args.model or DEFAULT_MODEL
 
     if backend not in BACKENDS:
@@ -301,9 +318,14 @@ def cmd_start(args: argparse.Namespace) -> None:
         console.print(f"Valid: {', '.join(BACKENDS)}")
         sys.exit(1)
 
+    if not (1 <= top_k <= 128):
+        console.print(f"[red]Invalid top-k: {top_k}[/]")
+        console.print(f"Valid range: 1-128")
+        sys.exit(1)
+
     # Android requires foreground services to be started from the app itself.
     # Use UI automation to tap the Start Server button.
-    console.print(f"[dim]Starting server: port={port} backend={backend} context={context}[/]")
+    console.print(f"[dim]Starting server: port={port} backend={backend} context={context} top_k={top_k}[/]")
 
     # Tap the Start Server button via uiautomator (auto-scrolls to find it)
     _tap_button("Start Server", console)
@@ -494,19 +516,50 @@ def cmd_test(args: argparse.Namespace) -> None:
     console.print()
 
 
+def cmd_models(args: argparse.Namespace) -> None:
+    from rich.console import Console
+    from rich.table import Table
+    console = Console()
+
+    # List available models with their paths
+    table = Table(title="Available Models", show_header=True, border_style="dim")
+    table.add_column("Model Name", style="bold cyan")
+    table.add_column("Path", style="dim")
+    table.add_column("Status", style="bold")
+
+    for name, path in AVAILABLE_MODELS.items():
+        table.add_row(name, path, "[dim]Not checked[/]")
+
+    console.print(table)
+    console.print("\nUse with: [bold]./tools/control.py start --model <name>[/]")
+    console.print("Example:  [bold]./tools/control.py start --model Gemma-4-E2B-it[/]")
+
+
 def cmd_info(args: argparse.Namespace) -> None:
     from rich.console import Console
     from rich.table import Table
     console = Console()
     require_device()
 
-    # Model file info
-    console.print("[bold]Model file[/]")
-    r = adb_shell(f"ls -la {DEFAULT_MODEL}", check=False)
+    # Model file info (check both new and legacy paths)
+    console.print("[bold]Model files[/]")
+    models_found = []
+
+    # Check new model directory structure
+    r = adb_shell(f"find /sdcard/Download/pocketd -name '*.litertlm' 2>/dev/null", check=False)
+    for line in r.stdout.strip().splitlines():
+        if line:
+            models_found.append(line)
+            console.print(f"  [green]Found[/]: {line}")
+
+    # Check legacy model path
+    r = adb_shell(f"ls -la {LEGACY_MODEL}", check=False)
     if r.returncode == 0:
-        console.print(f"  [green]Found[/]: {r.stdout.strip()}")
-    else:
-        console.print(f"  [red]Not found[/]: {DEFAULT_MODEL}")
+        models_found.append(LEGACY_MODEL)
+        console.print(f"  [green]Found (legacy)[/]: {LEGACY_MODEL}")
+
+    if not models_found:
+        console.print(f"  [yellow]No models found in /sdcard/Download/pocketd/ or {LEGACY_MODEL}[/]")
 
     # App info
     console.print("\n[bold]App package[/]")
@@ -601,9 +654,12 @@ def main():
               %(prog)s status                      Show device & server state
               %(prog)s start                       Start server (default settings)
               %(prog)s start --backend CPU         Start with CPU backend
-              %(prog)s start --context 4096        Start with larger context
+              %(prog)s start --context 4096        Start with 4096 token context
+              %(prog)s start --top-k 100           Start with top-k sampling at 100
+              %(prog)s start --model Qwen2.5-1.5B-Instruct    Start with Qwen model
               %(prog)s stop                        Stop the server
               %(prog)s restart --backend GPU       Restart with GPU backend
+              %(prog)s models                      List available models
               %(prog)s log -f                      Stream live logs
               %(prog)s test                        Run quick smoke tests
               %(prog)s test --prompt "Hi there"    Test with custom prompt
@@ -623,6 +679,8 @@ def main():
                    help=f"Inference backend (default: {DEFAULT_BACKEND})")
     p.add_argument("--context", type=int,
                    help=f"Context size in tokens (default: {DEFAULT_CONTEXT})")
+    p.add_argument("--top-k", type=int, dest="top_k",
+                   help=f"Top-K sampling parameter (default: {DEFAULT_TOP_K}, range: 1-128)")
     p.add_argument("--model", help=f"Model path on device (default: {DEFAULT_MODEL})")
 
     # stop
@@ -635,6 +693,8 @@ def main():
                    help=f"Inference backend (default: {DEFAULT_BACKEND})")
     p.add_argument("--context", type=int,
                    help=f"Context size in tokens (default: {DEFAULT_CONTEXT})")
+    p.add_argument("--top-k", type=int, dest="top_k",
+                   help=f"Top-K sampling parameter (default: {DEFAULT_TOP_K}, range: 1-128)")
     p.add_argument("--model", help=f"Model path on device (default: {DEFAULT_MODEL})")
 
     # log
@@ -654,6 +714,9 @@ def main():
     # info
     sub.add_parser("info", help="Show model, app, and permission info")
 
+    # models
+    sub.add_parser("models", help="List available models from Gallery")
+
     # ui-tap
     p = sub.add_parser("ui-tap", help="Tap a UI element by its text")
     p.add_argument("text", help="Button/element text to tap")
@@ -669,6 +732,7 @@ def main():
         "forward": cmd_forward,
         "test": cmd_test,
         "info": cmd_info,
+        "models": cmd_models,
         "ui-tap": cmd_ui_tap,
     }
     commands[args.command](args)
