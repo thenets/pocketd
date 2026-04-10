@@ -70,6 +70,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -78,6 +79,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -97,8 +99,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import dev.thenets.pocketd.download.AVAILABLE_MODELS
+import dev.thenets.pocketd.download.DEFAULT_MODEL
 import dev.thenets.pocketd.download.DownloadState
 import dev.thenets.pocketd.download.ModelDownloader
+import dev.thenets.pocketd.download.ModelInfo
 import dev.thenets.pocketd.llm.BackendType
 import dev.thenets.pocketd.model.ApiLogEntry
 import dev.thenets.pocketd.service.LlmServerService
@@ -131,21 +136,26 @@ val CONTEXT_SIZE_OPTIONS = listOf(
     ContextSizeOption(4096,   "4,096 tokens",  80,   "Extended — longer context"),
     ContextSizeOption(8192,   "8,192 tokens",  160,  "Large — 4+ GB device RAM"),
     ContextSizeOption(16384,  "16,384 tokens", 320,  "Very large — 8+ GB device RAM"),
-    ContextSizeOption(32768,  "32,768 tokens", 640,  "Huge — 12+ GB device RAM"),
+    ContextSizeOption(32768,  "32,768 tokens", 640,  "Recommended for Gemma 4 — 8+ GB RAM"),
     ContextSizeOption(65536,  "65,536 tokens", 1280, "Maximum — 24+ GB device RAM"),
 )
 // Note: RAM estimates are for KV cache only (on top of ~2 GB base model).
 // Actual max context depends on what the model was compiled to support.
 
-fun bestContextSize(totalRamMb: Long): ContextSizeOption = when {
-    totalRamMb >= 24 * 1024 -> CONTEXT_SIZE_OPTIONS[7]  // 65 536 — 24+ GB
-    totalRamMb >= 12 * 1024 -> CONTEXT_SIZE_OPTIONS[6]  // 32 768 — 12+ GB
-    totalRamMb >= 8  * 1024 -> CONTEXT_SIZE_OPTIONS[5]  // 16 384 —  8+ GB
-    totalRamMb >= 4  * 1024 -> CONTEXT_SIZE_OPTIONS[4]  //  8 192 —  4+ GB
-    totalRamMb >= 3  * 1024 -> CONTEXT_SIZE_OPTIONS[3]  //  4 096 —  3+ GB
-    totalRamMb >= 2560      -> CONTEXT_SIZE_OPTIONS[2]  //  2 048 — 2.5+ GB
-    totalRamMb >= 2200      -> CONTEXT_SIZE_OPTIONS[1]  //  1 024 — 2.2+ GB
-    else                    -> CONTEXT_SIZE_OPTIONS[0]  //    512 — fallback
+fun bestContextSize(totalRamMb: Long, model: ModelInfo = DEFAULT_MODEL): ContextSizeOption {
+    val isGemma4 = model.name.startsWith("Gemma-4")
+    return when {
+        totalRamMb >= 24 * 1024 -> CONTEXT_SIZE_OPTIONS[7]  // 65 536 — 24+ GB
+        totalRamMb >= 12 * 1024 -> CONTEXT_SIZE_OPTIONS[6]  // 32 768 — 12+ GB
+        totalRamMb >= 8  * 1024 ->
+            if (isGemma4) CONTEXT_SIZE_OPTIONS[6]            // 32 768 — Gallery recommended for Gemma 4
+            else CONTEXT_SIZE_OPTIONS[5]                     // 16 384 —  8+ GB
+        totalRamMb >= 4  * 1024 -> CONTEXT_SIZE_OPTIONS[4]   //  8 192 —  4+ GB
+        totalRamMb >= 3  * 1024 -> CONTEXT_SIZE_OPTIONS[3]   //  4 096 —  3+ GB
+        totalRamMb >= 2560      -> CONTEXT_SIZE_OPTIONS[2]   //  2 048 — 2.5+ GB
+        totalRamMb >= 2200      -> CONTEXT_SIZE_OPTIONS[1]   //  1 024 — 2.2+ GB
+        else                    -> CONTEXT_SIZE_OPTIONS[0]   //    512 — fallback
+    }
 }
 
 // ── Memory stats ──────────────────────────────────────────────────────────────
@@ -241,8 +251,10 @@ class MainActivity : ComponentActivity() {
     private var port    by mutableStateOf(LlmServerService.DEFAULT_PORT.toString())
     private var token   by mutableStateOf("")
     private var hfToken by mutableStateOf("")
-    private var selectedContextSize by mutableStateOf(CONTEXT_SIZE_OPTIONS[2]) // overridden in onCreate
+    private var selectedModel by mutableStateOf(DEFAULT_MODEL)
+    private var selectedContextSize by mutableStateOf(CONTEXT_SIZE_OPTIONS[3]) // overridden in onCreate
     private var selectedBackend by mutableStateOf(BackendType.GPU_WITH_CPU_FALLBACK)
+    private var topK by mutableIntStateOf(LlmServerService.DEFAULT_TOP_K)
     private var storagePermissionGranted by mutableStateOf(false)
 
     private fun checkStoragePermission(): Boolean =
@@ -280,15 +292,25 @@ class MainActivity : ComponentActivity() {
 
         storagePermissionGranted = checkStoragePermission()
 
-        // Pick the best context size for this device's RAM
+        // Restore persisted preferences
+        val prefs = getSharedPreferences("pocketd_prefs", Context.MODE_PRIVATE)
+        hfToken = prefs.getString("hf_token", "") ?: ""
+
+        // Restore selected model
+        val savedModelName = prefs.getString("selected_model", null)
+        if (savedModelName != null) {
+            AVAILABLE_MODELS.find { it.name == savedModelName }?.let {
+                selectedModel = it
+                modelDownloader.selectedModel = it
+                topK = it.defaultTopK
+            }
+        }
+
+        // Pick the best context size for this device's RAM and model
         val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val memInfo = ActivityManager.MemoryInfo()
         am.getMemoryInfo(memInfo)
-        selectedContextSize = bestContextSize(memInfo.totalMem / (1024L * 1024L))
-
-        // Restore persisted HF token
-        val prefs = getSharedPreferences("pocketd_prefs", Context.MODE_PRIVATE)
-        hfToken = prefs.getString("hf_token", "") ?: ""
+        selectedContextSize = bestContextSize(memInfo.totalMem / (1024L * 1024L), selectedModel)
 
         // Check if model already exists
         modelDownloader.checkModelExists()
@@ -311,8 +333,10 @@ class MainActivity : ComponentActivity() {
                         port                     = port,
                         token                    = token,
                         hfToken                  = hfToken,
+                        selectedModel            = selectedModel,
                         selectedContextSize      = selectedContextSize,
                         selectedBackend          = selectedBackend,
+                        topK                     = topK,
                         storagePermissionGranted = storagePermissionGranted,
                         onPortChange             = { port = it },
                         onTokenChange            = { token = it },
@@ -320,8 +344,21 @@ class MainActivity : ComponentActivity() {
                             hfToken = it
                             prefs.edit().putString("hf_token", it).apply()
                         },
+                        onModelChange            = { model ->
+                            selectedModel = model
+                            modelDownloader.selectedModel = model
+                            topK = model.defaultTopK
+                            prefs.edit().putString("selected_model", model.name).apply()
+                            modelDownloader.checkModelExists()
+                            // Re-pick context size for new model
+                            am.getMemoryInfo(memInfo)
+                            selectedContextSize = bestContextSize(
+                                memInfo.totalMem / (1024L * 1024L), model
+                            )
+                        },
                         onContextSizeChange      = { selectedContextSize = it },
                         onBackendChange          = { selectedBackend = it },
+                        onTopKChange             = { topK = it },
                         onStartClick             = { startServer() },
                         onStopClick              = { stopServer() },
                         onDownloadClick          = { startDownload() },
@@ -370,11 +407,12 @@ class MainActivity : ComponentActivity() {
             this,
             LlmServerService.startIntent(
                 context     = this,
-                modelPath   = ModelDownloader.MODEL_PATH,
+                modelPath   = modelDownloader.resolveModelPath(),
                 port        = portInt,
                 bearerToken = token.ifBlank { null },
                 contextSize = selectedContextSize.tokens,
-                backend     = selectedBackend
+                backend     = selectedBackend,
+                topK        = topK
             )
         )
     }
@@ -458,14 +496,18 @@ private fun ServerControlScreen(
     port: String,
     token: String,
     hfToken: String,
+    selectedModel: ModelInfo,
     selectedContextSize: ContextSizeOption,
     selectedBackend: BackendType,
+    topK: Int,
     storagePermissionGranted: Boolean,
     onPortChange: (String) -> Unit,
     onTokenChange: (String) -> Unit,
     onHfTokenChange: (String) -> Unit,
+    onModelChange: (ModelInfo) -> Unit,
     onContextSizeChange: (ContextSizeOption) -> Unit,
     onBackendChange: (BackendType) -> Unit,
+    onTopKChange: (Int) -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit,
     onDownloadClick: () -> Unit,
@@ -539,7 +581,10 @@ private fun ServerControlScreen(
 
             ModelCard(
                 downloadState = downloadState,
+                selectedModel = selectedModel,
                 hfToken = hfToken,
+                isRunning = isRunning,
+                onModelChange = onModelChange,
                 onHfTokenChange = onHfTokenChange,
                 onDownloadClick = onDownloadClick,
                 onCancelDownload = onCancelDownload
@@ -550,12 +595,14 @@ private fun ServerControlScreen(
                 token = token,
                 selectedContextSize = selectedContextSize,
                 selectedBackend = selectedBackend,
+                topK = topK,
                 isRunning = isRunning,
                 modelReady = modelReady,
                 onPortChange = onPortChange,
                 onTokenChange = onTokenChange,
                 onContextSizeChange = onContextSizeChange,
                 onBackendChange = onBackendChange,
+                onTopKChange = onTopKChange,
                 onStartClick = onStartClick,
                 onStopClick = onStopClick
             )
@@ -887,10 +934,14 @@ private fun NetworkAddressRow(addr: NetworkAddress) {
 
 // ── Model Card ────────────────────────────────────────────────────────────────
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ModelCard(
     downloadState: DownloadState,
+    selectedModel: ModelInfo,
     hfToken: String,
+    isRunning: Boolean,
+    onModelChange: (ModelInfo) -> Unit,
     onHfTokenChange: (String) -> Unit,
     onDownloadClick: () -> Unit,
     onCancelDownload: () -> Unit
@@ -904,13 +955,60 @@ private fun ModelCard(
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
+            Text("Model", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+
+            // Model picker dropdown
+            var modelExpanded by remember { mutableStateOf(false) }
+            val isDownloading = downloadState is DownloadState.Downloading
+            ExposedDropdownMenuBox(
+                expanded = modelExpanded,
+                onExpandedChange = { if (!isRunning && !isDownloading) modelExpanded = it }
+            ) {
+                OutlinedTextField(
+                    value = selectedModel.name,
+                    onValueChange = {},
+                    readOnly = true,
+                    enabled = !isRunning && !isDownloading,
+                    label = { Text("Select model") },
+                    supportingText = {
+                        val features = selectedModel.features.joinToString(", ")
+                        val featureStr = if (features.isNotEmpty()) " | $features" else ""
+                        Text("${selectedModel.sizeMb} MB | ${selectedModel.maxContext} ctx | ${selectedModel.minRamGb}+ GB RAM$featureStr")
+                    },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(modelExpanded) },
+                    modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                )
+                ExposedDropdownMenu(expanded = modelExpanded, onDismissRequest = { modelExpanded = false }) {
+                    AVAILABLE_MODELS.forEach { model ->
+                        val features = model.features.joinToString(", ")
+                        val featureStr = if (features.isNotEmpty()) " | $features" else ""
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(model.name, style = MaterialTheme.typography.bodyLarge)
+                                    Text("${model.sizeMb} MB | ${model.maxContext} ctx | ${model.minRamGb}+ GB RAM$featureStr",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            },
+                            onClick = { onModelChange(model); modelExpanded = false }
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+
             when (downloadState) {
                 is DownloadState.Idle -> {
-                    Text("Model Not Found",
-                        style = MaterialTheme.typography.titleMedium,
+                    Text("Model Not Downloaded",
+                        style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.error)
                     Spacer(Modifier.height(8.dp))
-                    Text(ModelDownloader.MODEL_PATH,
+                    Text(selectedModel.path,
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -922,9 +1020,9 @@ private fun ModelCard(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text(ModelDownloader.MODEL_FILENAME,
+                            Text(selectedModel.filename,
                                 style = MaterialTheme.typography.bodyMedium)
-                            Text("LiteRT-LM format",
+                            Text("${selectedModel.sizeMb} MB — LiteRT-LM format",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
@@ -938,8 +1036,8 @@ private fun ModelCard(
 
                 is DownloadState.Downloading -> {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Downloading Model...",
-                            style = MaterialTheme.typography.titleMedium,
+                        Text("Downloading ${selectedModel.name}...",
+                            style = MaterialTheme.typography.titleSmall,
                             modifier = Modifier.weight(1f))
                         TextButton(onClick = onCancelDownload) { Text("Cancel") }
                     }
@@ -977,16 +1075,16 @@ private fun ModelCard(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         StatusDot(Color(0xFF4CAF50))
                         Spacer(Modifier.width(8.dp))
-                        Text("Model Ready", style = MaterialTheme.typography.titleMedium)
+                        Text("Model Ready", style = MaterialTheme.typography.titleSmall)
                     }
                     Spacer(Modifier.height(8.dp))
-                    InfoRow("File", ModelDownloader.MODEL_FILENAME)
-                    InfoRow("Path", ModelDownloader.MODEL_PATH)
+                    InfoRow("File", selectedModel.filename)
+                    InfoRow("Size", "${selectedModel.sizeMb} MB")
                 }
 
                 is DownloadState.Failed -> {
                     Text("Download Failed",
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.error)
                     Spacer(Modifier.height(8.dp))
                     Text(downloadState.message,
@@ -1322,12 +1420,14 @@ private fun ConfigurationCard(
     token: String,
     selectedContextSize: ContextSizeOption,
     selectedBackend: BackendType,
+    topK: Int,
     isRunning: Boolean,
     modelReady: Boolean,
     onPortChange: (String) -> Unit,
     onTokenChange: (String) -> Unit,
     onContextSizeChange: (ContextSizeOption) -> Unit,
     onBackendChange: (BackendType) -> Unit,
+    onTopKChange: (Int) -> Unit,
     onStartClick: () -> Unit,
     onStopClick: () -> Unit
 ) {
@@ -1399,6 +1499,31 @@ private fun ConfigurationCard(
                         )
                     }
                 }
+            }
+
+            // Top-K slider
+            Column {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Top-K", style = MaterialTheme.typography.bodyMedium)
+                    Text("$topK",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace)
+                }
+                Slider(
+                    value = topK.toFloat(),
+                    onValueChange = { onTopKChange(it.toInt()) },
+                    valueRange = 1f..128f,
+                    steps = 126,
+                    enabled = !isRunning
+                )
+                Text("Controls token sampling diversity (1 = greedy, 128 = max diversity)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             OutlinedTextField(
