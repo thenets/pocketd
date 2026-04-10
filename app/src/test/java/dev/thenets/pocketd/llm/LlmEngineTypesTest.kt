@@ -33,7 +33,7 @@ class LlmEngineTypesTest {
     @Test
     fun `InferenceParams - defaults`() {
         val params = InferenceParams()
-        assertEquals(40, params.topK)
+        assertEquals(64, params.topK)
         assertEquals(0.95, params.topP, 0.001)
         assertEquals(1.0, params.temperature, 0.001)
         assertNull(params.systemInstruction)
